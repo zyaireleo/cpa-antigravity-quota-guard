@@ -55,6 +55,7 @@ plugins:
   configs:
     cpa-antigravity-quota-guard:
       enabled: true
+      priority: -100
       required-scheduler-for:
         - antigravity
       mode: observe
@@ -88,7 +89,7 @@ plugins:
    - `scheduler_request_id_v1`
    - `scheduler_direct_response_v1`
    - `auth_inventory_ready_v1`
-2. 插件配置包含 `required-scheduler-for: [antigravity]`。宿主会持续验证本插件是唯一 active Scheduler；缺失、fuse、卸载、单插件或全局插件开关关闭、无效响应或出现第二个 Scheduler 时，Antigravity 路由本地返回 503，不回退内建调度器。只有显式删除 marker 才解除保护。
+2. 插件配置包含 `required-scheduler-for: [antigravity]`。宿主会将 Antigravity 路由精确交给本插件；本插件缺失、fuse、卸载、单插件或全局插件开关关闭、decline 或返回无效结果时，Antigravity 路由本地返回 503，不回退内建调度器。其他 Provider 的 Scheduler 可以同时启用。对于未配置 required Scheduler 的路由，CPA 仍只调用全局最高插件 priority 的 Scheduler，因此应让本插件 priority 低于 `codex-token-usage` 等其他 Provider Scheduler，例如本插件 `-100`、`codex-token-usage` 为 `0`。只有显式删除 marker 才解除保护。
 3. CPA Home 模式关闭。增强 Core 会在 Home 仍开启时对 Antigravity fail-closed，但这不是正常运行模式。
 4. 所有受管 Antigravity 账号 priority 一致。
 5. `gemini`、`claude_gpt` 均有 fresh baseline quota evidence。
@@ -130,7 +131,7 @@ CLIProxyAPI `v7.2.141` 中，`usage.handle` 是异步派发，因此插件不能
 
 - Scheduler/Usage 通过 `RequestID` 关联 half-open lease，避免旧请求关闭新 lease。
 - Scheduler rejection 可安全返回 HTTP 429、数字 `Retry-After` 和最大 64 KiB 的合法 JSON body。
-- `required-scheduler-for` 让 Antigravity 在 Scheduler 缺失、fuse、抢占、decline 或返回无效结果时本地 503，禁止静默回退。
+- `required-scheduler-for` 将 Antigravity 精确路由到本插件，并在其缺失、fuse、inactive、decline 或返回无效结果时本地 503，禁止静默回退；无关 Provider Scheduler 可同时保持 active。
 - `auth_inventory_ready_v1` 让插件区分“CPA 仍在冷启动加载 auth”与“已加载但 roster 为空”，避免早期空列表擦除持久化 cooldown。
 - required Scheduler 可用 `DelegateBuiltin=configured` 在 `observe` 或未启用的模型组中委托宿主当前 configured selector，保留原 routing strategy 和 cursor；宿主不会重新选中已由插件排除的账号。
 - Home 开启时同样 fail-closed。

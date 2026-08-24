@@ -55,6 +55,7 @@ plugins:
   configs:
     cpa-antigravity-quota-guard:
       enabled: true
+      priority: -100
       required-scheduler-for:
         - antigravity
       mode: observe
@@ -88,7 +89,7 @@ All gates must pass:
    - `scheduler_request_id_v1`
    - `scheduler_direct_response_v1`
    - `auth_inventory_ready_v1`
-2. Configure `required-scheduler-for: [antigravity]`. The host continuously requires this plugin to be the one active Scheduler; missing, fused, unloaded, individually or globally disabled, invalid, or competing Schedulers produce a local 503 instead of built-in fallback. Only explicitly removing the marker retires the protection.
+2. Configure `required-scheduler-for: [antigravity]`. The host routes Antigravity requests directly to this plugin; missing, fused, unloaded, individually or globally disabled, declined, or invalid results produce a local 503 instead of built-in fallback. Schedulers for unrelated providers may remain active. Routes without a required Scheduler still use only the globally highest plugin priority, so keep this plugin below provider-specific Schedulers such as `codex-token-usage` (for example, quota guard `-100`, token usage `0`). Only explicitly removing the marker retires the protection.
 3. Disable CPA Home mode. The extended Core fails Antigravity closed if Home remains enabled, but that is a safety response rather than a supported steady state.
 4. All managed Antigravity credentials use the same priority.
 5. Both `gemini` and `claude_gpt` have fresh baseline quota evidence.
@@ -130,7 +131,7 @@ Long-term `enforce` requires the Core extensions:
 
 - Scheduler and Usage carry a `RequestID` so half-open leases cannot be closed by an older request.
 - Scheduler rejection can safely return HTTP 429, a numeric `Retry-After`, and a valid JSON body capped at 64 KiB.
-- `required-scheduler-for` returns a local 503 when the Scheduler is missing, fused, overridden, declines, or returns an invalid result, with no built-in fallback.
+- `required-scheduler-for` routes Antigravity directly to this plugin and returns a local 503 when it is missing, fused, inactive, declines, or returns an invalid result, with no built-in fallback; unrelated provider Schedulers may remain active.
 - `auth_inventory_ready_v1` distinguishes an early bootstrap-time empty auth list from a fully loaded empty roster, preventing cold start from erasing persisted cooldown state.
 - A required Scheduler can return `DelegateBuiltin=configured` in `observe` mode or for unenforced model groups, preserving the host's configured routing strategy and cursor without allowing built-in selection to reintroduce excluded credentials.
 - Home mode also fails the required route closed.
