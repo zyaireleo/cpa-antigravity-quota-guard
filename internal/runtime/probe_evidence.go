@@ -8,12 +8,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/core"
-	"antigravity-priority/internal/evidence"
-	"antigravity-priority/internal/host"
-	"antigravity-priority/internal/provider/antigravity"
-	"antigravity-priority/internal/state"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/evidence"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/provider/antigravity"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/state"
 )
 
 type collectInput struct {

@@ -36,7 +36,7 @@ func extractPluginConfigYAML(data string) string {
 		return strings.Join(collected, "\n")
 	}
 
-	// If this is a full CPA config.yaml that doesn't define an antigravity-priority block,
+	// If this is a full CPA config.yaml that doesn't define a recognized plugin block,
 	// return empty so Default() configuration is used instead of failing on host-level fields.
 	if hasHostPlugins {
 		return ""
@@ -55,7 +55,10 @@ func hasTopLevelPluginField(data string) bool {
 			continue
 		}
 		switch strings.TrimSpace(key) {
-		case KeyEnabled, KeyStateCachePath:
+		case KeyEnabled, KeyAutoApply, KeyStateCachePath, KeyMode, KeyManagedAuth,
+			KeyEnforcedGroups, KeyRequireUniformPriority, KeyProbeInterval,
+			KeyEvidenceMaxAge, KeyGeneric429, KeyHalfOpenLease,
+			KeyUnknownAuthPolicy, KeyUnknownModelPolicy, KeyStatePath, "required-scheduler-for":
 			return true
 		}
 	}
@@ -130,9 +133,11 @@ func leadingSpaces(line string) int {
 
 func parseYAMLMap(data string) (map[string]any, error) {
 	result := map[string]any{}
-	for _, line := range strings.Split(data, "\n") {
+	lines := strings.Split(data, "\n")
+	for index := 0; index < len(lines); index++ {
+		line := lines[index]
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "- ") || trimmed == "-" {
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
 		indent := len(line) - len(strings.TrimLeft(line, " "))
@@ -144,9 +149,75 @@ func parseYAMLMap(data string) (map[string]any, error) {
 			return nil, invalid("config", trimmed, "must use key: value syntax")
 		}
 		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
-		result[key] = yamlScalar(value)
+		if value != "" {
+			result[key] = yamlValue(key, value)
+			continue
+		}
+
+		block, next := collectYAMLChildBlock(lines, index+1)
+		if len(block) == 0 {
+			result[key] = ""
+			continue
+		}
+		index = next - 1
+		if strings.HasPrefix(strings.TrimSpace(block[0]), "-") {
+			items := make([]string, 0, len(block))
+			for _, child := range block {
+				item := strings.TrimSpace(child)
+				if !strings.HasPrefix(item, "-") {
+					return nil, invalid(key, item, "must be a YAML list")
+				}
+				item = strings.TrimSpace(strings.TrimPrefix(item, "-"))
+				if item != "" {
+					items = append(items, yamlText(item))
+				}
+			}
+			result[key] = items
+			continue
+		}
+		nested, err := parseYAMLMap(strings.Join(normalizeIndentedBlock(block), "\n"))
+		if err != nil {
+			return nil, err
+		}
+		result[key] = nested
 	}
 	return result, nil
+}
+
+func collectYAMLChildBlock(lines []string, start int) ([]string, int) {
+	block := make([]string, 0)
+	for index := start; index < len(lines); index++ {
+		line := lines[index]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if leadingSpaces(line) == 0 {
+			return block, index
+		}
+		block = append(block, line)
+	}
+	return block, len(lines)
+}
+
+func yamlValue(key, value string) any {
+	if key == KeyEnforcedGroups {
+		text := yamlText(value)
+		text = strings.TrimPrefix(text, "[")
+		text = strings.TrimSuffix(text, "]")
+		if strings.TrimSpace(text) == "" {
+			return []string{}
+		}
+		items := make([]string, 0)
+		for _, item := range strings.Split(text, ",") {
+			item = strings.Trim(strings.TrimSpace(item), "\"'")
+			if item != "" {
+				items = append(items, item)
+			}
+		}
+		return items
+	}
+	return yamlScalar(value)
 }
 
 func yamlScalar(value string) any {

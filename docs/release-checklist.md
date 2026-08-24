@@ -1,141 +1,102 @@
-# Antigravity Priority 发布审阅与版本迭代检查规范 (Release & Audit Checklist)
+# CPA Antigravity Quota Guard 发布检查清单
 
-本文档定义了 `antigravity-priority` 插件在每次版本迭代、代码提交与正式发布前的**标准化审阅流程与变更检查矩阵**。每次完成功能开发或缺陷修复后，在提交代码与发布 Release 前，**必须严格依照本清单逐项自检**，确保所有关联文件与元数据变更到位。
+## 1. 版本与身份一致性
 
----
+发布前必须保证：
 
-## 目录
-1. [版本号同步一致性矩阵](#1-版本号同步一致性矩阵)
-2. [文档与双语同步审阅清单](#2-文档与双语同步审阅清单)
-3. [CPA 宿主与插件架构契约审阅](#3-cpa-宿主与插件架构契约审阅)
-4. [代码质量与测试验证矩阵](#4-代码质量与测试验证矩阵)
-5. [标准化发布工作流步骤](#5-标准化发布工作流步骤)
+| 位置 | 要求 |
+|---|---|
+| `registry.json` | id=`cpa-antigravity-quota-guard`，version 为三段式版本 |
+| `internal/runtime/runtime.go` | `buildMetadata()` 名称、作者、仓库、版本一致 |
+| `internal/management/feature_shell_assets.go` | 若保留 legacy shell，版本 badge 与 Release 一致 |
+| `.github/workflows/release.yml` | `PLUGIN_NAME=cpa-antigravity-quota-guard` |
+| `.github/release-notes/vX.Y.Z.md` | 文件名、标题、中文、English 一致 |
+| `README.md` / `README.en.md` | 二进制名、配置键、Management 路由一致 |
 
----
+历史 `v1.x` Release Notes 属于上游历史，可保留但不得作为当前 fork 的版本来源。
 
-## 1. 版本号同步一致性矩阵
+## 2. 架构安全闸门
 
-当进行版本升级（如 `v1.0.1` $\to$ `v1.1.0`）时，**必须确保以下 4 个位置的版本号完全一致**：
+- 只注册 `scheduler`、`usage_plugin`、`request_interceptor`、`management_api`。
+- `filter.*` 调用返回 `invalid_request`。
+- `auto_apply=true` 在 YAML、JSON、动态配置和遗留缓存恢复路径中均被拒绝或忽略。
+- `ManualApply`、`AutoApply`、`ResetAllPriorities` 返回 `ErrLegacyMutationDisabled`。
+- 生产 probe 只消费 `host.auth.get` 返回的 `AuthDocument.JSON`，不读取 `Path`。
+- 官方 ABI、Management、后台 probe 和 shutdown 全程 `SaveAuth=0`。
+- 人工 disabled 账号不会被插件重新启用。
+- `Unavailable` 账号刷新 roster 时不得丢失 breaker。
+- 同一 `(auth_index, model_group)` 只能有一个 active half-open lease。
+- delayed Usage 不能覆盖更新鲜 quota evidence；旧成功不能关闭新 half-open。
 
-| 检查项 | 目标文件 | 关键位置 / 字段 | 审阅标准 |
-| :--- | :--- | :--- | :--- |
-| **① 插件注册表** | `registry.json` | `plugins[0].version` | 必须为纯三段式版本号，如 `"1.1.0"`（无 `v` 前缀） |
-| **② 运行时元数据** | `internal/runtime/runtime.go` | `buildMetadata().Version` | 必须与 `registry.json` 完全一致，如 `"1.1.0"` |
-| **③ 嵌入式 Web 仪表盘** | `internal/management/feature_shell_assets.go` | `<span class="version-badge">v1.1.0</span>` | 必须带有 `v` 前缀，如 `v1.1.0` |
-| **④ 专属 Release Note** | `.github/release-notes/vX.Y.Z.md` | 文件名与一级标题 `# antigravity-priority vX.Y.Z` | 文件名必须为 `vX.Y.Z.md`，内容双语齐备 |
+## 3. 状态文件与敏感信息
 
----
+- `state_path` 位于 `data/cpa-antigravity-quota-guard/`。
+- 拒绝绝对路径、Windows 绝对路径、`..`、auth/credentials 目录、目标 symlink 和父级 symlink。
+- 文件权限 `0600`。
+- 使用临时文件、file `fsync`、atomic rename、directory `fsync`、read-back 验证。
+- 状态、日志、Management API 不包含 access token、refresh token、完整 auth JSON、请求体或完整错误体。
+- Management Key 不接受 URL query，不进入 `localStorage`/`sessionStorage`。
 
-## 2. 文档与双语同步审阅清单
+## 4. CPA 兼容闸门
 
-用户面向的公开文档应保持专业清晰、**聚焦核心功能价值**，遵循以下规范：
+对 `docs/phase0-abi-gate.md` 固定的 CPA commit 执行 Phase 0 测试，并记录日期和 commit。
 
-1. **核心功能聚焦原则**：
-   - 概览仅保留高阶核心能力（如 Antigravity 双窗口调度、Dynamic Boost 提权、Weekly Urgency 轮转、自适应学习率、自愈式软降级、UI 动态配置中心、双主题仪表盘）；
-   - **严禁过度展开技术细节**（无需单独罗列如“复用 CPA 宿主链路”、“新鲜证据门禁”、“两阶段纯内存计算”等开发层面的细节优化）。
-2. **纯净化原则（无内部研发代号）**：
-   - **严禁在 `README.md`、`README.en.md` 和 Release Notes 中暴露 `(REQ-xx)` 内部研发标签**。
+`enforce` 前必须确认：
 
-| 文档 | 审阅重点 | 检查要点 |
-| :--- | :--- | :--- |
-| **`README.md`** (中文) | 功能概览、极简配置、管理 API | - 聚焦核心功能，无细碎实现堆砌；<br>- **严禁带有 `(REQ-xx)` 内部标签**；<br>- 配置说明准确体现“极简 YAML + Web 配置中心”模式；<br>- 接口列表与路由变更保持同步。 |
-| **`README.en.md`** (英文) | 英文对照完整性 | - 中英文段落结构 1:1 对齐；<br>- 英文表达地道准确；<br>- **严禁带有 `(REQ-xx)` 内部标签**。 |
-| **`.github/release-notes/vX.Y.Z.md`** | 双语 Release Note | - 包含 `### 中文` 与 `### English` 两大章节；<br>- 重点分模块梳理核心功能升级、性能优化、体验改善；<br>- **严禁带有 `(REQ-xx)` 内部标签**。 |
-| **`docs/requirements/`** | 需求与技术规格路线图 | - 状态从 `待实施 (Ready)` 更新为 `已完成 (Completed)`；<br>- 涵盖需求规格、领域模型与架构设计（内部研发文档可保留 REQ 编号）。 |
+1. Core 基于 CLIProxyAPI `v7.2.141` / `dc3c3b1ec3ed04bb0917e76451eaf98c6842674d` 的增强改动构建。
+2. lifecycle 协商同时包含：
+   - `required_scheduler_v1`
+   - `scheduler_request_id_v1`
+   - `scheduler_direct_response_v1`
+   - `auth_inventory_ready_v1`
+3. 插件 host 配置包含 `required-scheduler-for: [antigravity]`。
+4. 唯一 active Scheduler 是本插件；第二个 Scheduler、插件 fuse/卸载/加载失败时 Antigravity 必须本地 503，不能回退 built-in。
+5. CPA Home disabled；若误开启，Antigravity 必须本地 503。
+6. 受管账号 priority 一致。
+7. 两个模型组 fresh evidence 完整。
+8. plugin-only 全池 cooldown 返回本地 429、数字 `Retry-After` 和结构化 JSON，Provider 抓包为零出站。
+9. Scheduler/Usage `RequestID` 能正确关联 half-open；旧 Usage 不得关闭新 lease。
+10. 冷启动 `inventory_ready=false` 时插件仍 registered，但 `enforcement_ready=false`；受保护 Antigravity-only 请求本地 503，已有状态文件不得被空 roster 覆盖。
+11. inventory ready 后通用 reconfigure 能恢复 `enforcement_ready=true`；`observe` / 未 enforcement 模型组通过 `DelegateBuiltin=configured` 保留当前 routing strategy。
 
----
+stock Core 只能用于 `observe` 验证。插件必须在 host feature 缺失时拒绝 `enforce`。
 
-## 3. CPA 宿主与插件架构契约审阅
+## 5. 供应链
 
-| 审阅维度 | 架构原理与检查标准 | 达标标准 |
-| :--- | :--- | :--- |
-| **宿主配置极简** | CPA 宿主 `config.yaml` 仅作为基础加载开关，不承载日常业务参数。 | 用户 YAML 仅需 `enabled: true`，物理路径 `state_cache_path` 默认缺省为 `data/antigravity-priority-cache.json`。 |
-| **元数据干净度 (`buildMetadata`)** | CPA 官方管理端根据 `Metadata.ConfigFields` 渲染抽屉表单，用户在抽屉保存会写回 `config.yaml` 导致 CPA 强制重载。为了让配置中心独占管理业务参数，**`ConfigFields` 保持为 `nil`**（方案 A 极简无扰）。 | `buildMetadata()` 中不包含 `ConfigFields`，避免产生表单冲突与意外重载。 |
-| **分层配置底座 (`config.Default()`)** | `config.Default()` 是系统冷启动、无缓存文件时的基准兜底以及 UI 恢复默认值的**单一真实来源 (Single Source of Truth)**。 | `Default()` 返回的默认结构（15m, gemini, 6, 1, 999, 100）必须与推荐配置完全一致。 |
-| **动态配置持久化与热重载** | 业务与调度参数保存至 `data/antigravity-priority-cache.json` 的 `app_config` 节点，修改后立即热重设 Ticker Worker。 | 动态配置持久化存盘 (`SaveAtomic`)，启动与 Reconfigure 时自动合并持久化配置，0 秒免重启热生效。 |
+- GitHub Actions 使用完整 commit SHA。
+- Release 不覆盖既有远端 asset。
+- 每个压缩包生成 SHA-256。
+- Release Note 记录插件 commit、上游插件基线、CPA 兼容版本。
+- 不自动信任第三方预编译 `.so/.dylib/.dll`。
 
----
-
-## 4. 代码质量与测试验证矩阵
-
-每完成一项功能或缺陷修复，必须先在本地执行 lint，再执行单元测试；准备提交或发布前，必须再次执行同一套 lint，并完成完整质量矩阵。所有检查都必须 **100% 通过且零告警**。
-
-### 4.1 功能完成后的本地验证顺序
-
-本地完成代码后必须严格按以下顺序执行，不能用 `go vet` 替代 `golangci-lint`：
-
-```bash
-# 1. Lint（必须使用与 release workflow 一致的 golangci-lint v2.12.2）
-golangci-lint run --timeout=5m
-
-# 2. 单元测试
-go test ./...
-```
-
-### 4.2 提交与发布前完整验证
-
-准备提交、创建版本标签或发布 Release 前，必须重新执行 lint，然后执行以下完整验证命令：
+## 6. 完整质量门禁
 
 ```bash
-# 1. Lint（必须使用与 release workflow 一致的 golangci-lint v2.12.2）
 golangci-lint run --timeout=5m
-
-# 2. 编译自检（确保所有包与子模块无语法/类型错误）
 go build ./...
-
-# 3. 基础静态代码分析
 go vet ./...
-
-# 4. 完整单元测试（包括文档完整性、注册表合规性、模板合规性测试）
 go test -v ./...
-
-# 5. 数据竞争检测（确保并发调度、探针协程池与缓存读写零 race condition）
 go test -race ./...
+git diff --check
 ```
 
-### 关键测试项说明
-- **`TestRegistryJSON_SchemaValidation`**：校验 `registry.json` 符合 CPA 插件商店标准。
-- **`TestDocumentation_BilingualCompleteness`**：校验 `README.md` 与 `README.en.md` 存在且双语完整。
-- **`TestStatusHTML_NoRemoteURLs`**：确保 `StatusHTML` 零外部 CDN、零远程字体/脚本，100% 离线自包含，符合严格 CSP。
-- **`TestStatusHTML_CSSTokenCompleteness`**：确保明亮/暗色/羊皮纸 3 种主题变量完整闭环。
+并检查：
 
----
-
-## 5. 标准化发布工作流步骤
-
-```text
-[功能开发 / 需求迭代]
-         │
-         ▼
-[1. 关联代码与文档更新]
-   ├─ 更新业务代码与单元测试 (TDD)
-   ├─ 检查版本号一致性 (registry.json, runtime.go, feature_shell_assets.go)
-   ├─ 编写 .github/release-notes/vX.Y.Z.md (双语、无 REQ 标签、核心功能)
-   └─ 同步更新 README.md 与 README.en.md (高度凝练、无技术细节堆砌)
-         │
-         ▼
-[2. 功能完成后的本地验证]
-   ├─ golangci-lint run --timeout=5m
-   └─ go test ./...
-         │
-         ▼
-[3. 执行提交与发布前完整质量自检]
-   ├─ 再次执行 golangci-lint run --timeout=5m
-   ├─ go build ./...
-   ├─ go vet ./...
-   ├─ go test -v ./...
-   └─ go test -race ./...
-         │
-         ▼
-[4. 用户确认 (安全底线)]
-   └─ "Never commit without explicit user confirmation during the conversation"
-         │
-         ▼
-[5. Git Commit 提交与打标]
-   ├─ Commit 消息遵循 Conventional Commits 规范 (如 chore: bump version to v1.1.0)
-   └─ 创建 Git Tag: git tag vX.Y.Z
-         │
-         ▼
-[5. GitHub Release 自动化发布]
-   └─ CI 自动交叉编译生成各平台动态库产物 (.so / .dylib / .dll)
+```bash
+rg -n 'host\.auth\.save|SaveAuth\(|ReplaceAuth\(|ManualApply|AutoApply|ResetAllPriorities|triggerCooldown' \
+  main.go internal/runtime internal/management cmd/devserver
 ```
+
+命中项必须是明确的兼容 stub、Host ABI 适配或已隔离 legacy 代码，不能存在官方运行路径可达的 auth 写回。
+
+## 7. 人工验收
+
+- 本地 Dev Server 状态页可打开。
+- Dev Server 默认仅监听 `127.0.0.1`；非 loopback 未带 `-unsafe-listen` 时拒绝启动。
+- Dev Management API 未提供独立 key 时返回 401；key 不通过 query、URL 或浏览器持久化存储传递。
+- Management status/config/probe/half-open 路由返回预期状态。
+- 状态响应能看到 quota evidence、breaker、`recover_at`、最后一次选择和最后失败原因。
+- observe 模式实际请求行为不变。
+- 隔离环境验证 Gemini/Claude-GPT 组级隔离、全池零出站、half-open 单请求和重启恢复。
+- required Scheduler 缺失、fuse、第二 Scheduler、Home 和 invalid response 场景均 fail-closed。
+- 只有用户明确说“可以提交”或“commit”后才能 Git commit；push、PR、Release、部署仍需分别获得明确授权。

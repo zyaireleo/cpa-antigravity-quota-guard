@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-priority/internal/host"
-	"antigravity-priority/internal/provider/antigravity"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/provider/antigravity"
 )
 
 const (

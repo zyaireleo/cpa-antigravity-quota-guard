@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"antigravity-priority/internal/management"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/management"
 )
 
 func TestHandler_Status_HTML_ServesEmbeddedTemplate(t *testing.T) {

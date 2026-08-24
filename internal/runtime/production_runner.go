@@ -10,16 +10,18 @@ import (
 	"strings"
 	"time"
 
-	"antigravity-priority/internal/apply"
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/core"
-	"antigravity-priority/internal/evidence"
-	"antigravity-priority/internal/host"
-	"antigravity-priority/internal/priority"
-	"antigravity-priority/internal/state"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/apply"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/evidence"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/guard"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/priority"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/state"
 )
 
 var errMissingHostCallbacks = errors.New("runtime: host callbacks are required")
+var errAuthInventoryNotReady = errors.New("runtime: host auth inventory is not ready")
 
 const (
 	autoQuotaProbeAttempts = 3
@@ -28,10 +30,10 @@ const (
 )
 
 func (r *Runtime) runProductionTask(ctx context.Context, request TaskRequest) error {
-	if !request.Config.Enabled && request.Trigger != TriggerManualApply {
-		return nil
+	if request.Trigger != TriggerProbe {
+		return ErrLegacyMutationDisabled
 	}
-	if request.Trigger == TriggerAutoApply && !request.Config.AutoApply {
+	if !request.Config.Enabled {
 		return nil
 	}
 	if r.hostCallbacks == nil {
@@ -39,9 +41,18 @@ func (r *Runtime) runProductionTask(ctx context.Context, request TaskRequest) er
 	}
 	now := r.clock.Now().UTC()
 	client := host.NewClient(r.hostCallbacks)
-	files, err := client.ListAuthFiles(ctx)
+	inventory, err := client.ListAuthInventory(ctx)
 	if err != nil {
 		return err
+	}
+	if !inventory.Ready {
+		return errAuthInventoryNotReady
+	}
+	files := inventory.Files
+	probedIdentities := guardIdentitiesByIndex(files)
+	ignoredGuardEvidence := disabledGuardAuthIndexes(files)
+	if err := r.updateGuardRosterFromFiles(files); err != nil {
+		return fmt.Errorf("refresh quota guard roster before probe: %w", err)
 	}
 
 	credentials := credentialsFromAuthFiles(files)
@@ -61,39 +72,37 @@ func (r *Runtime) runProductionTask(ctx context.Context, request TaskRequest) er
 		return err
 	}
 
-	var preview *quotaPreview
-	if request.Trigger == TriggerManualApply && request.PreviewRequired {
-		preview, err = r.previewForApply(request)
-		if err != nil {
-			return err
-		}
+	evidence, err := r.collectEvidenceForTrigger(ctx, collectInput{
+		client:         client,
+		store:          store,
+		credentials:    credentials,
+		authMaterials:  authMaterials,
+		now:            now,
+		cacheTTL:       defaultProbeCacheTTL,
+		forceProbe:     true,
+		maxConcurrency: request.Config.MaxConcurrency,
+		modelGroup:     request.Config.AntigravityModelGroup,
+		sampleCapacity: request.Config.QuotaSampleCapacity,
+	}, TriggerProbe)
+	if err != nil {
+		return err
 	}
-
-	var evidence collectedEvidence
-	if preview != nil {
-		evidence = collectedEvidence{
-			RoundID:      preview.ID,
-			ByGroup:      cloneEvidenceByGroup(preview.EvidenceByGroup),
-			Observations: nil,
-		}
-	} else {
-		forceProbe := request.Trigger == TriggerProbe || request.Trigger == TriggerAutoApply
-		evidence, err = r.collectEvidenceForTrigger(ctx, collectInput{
-			client:         client,
-			store:          store,
-			credentials:    credentials,
-			authMaterials:  authMaterials,
-			now:            now,
-			cacheTTL:       defaultProbeCacheTTL,
-			forceProbe:     forceProbe,
-			maxConcurrency: request.Config.MaxConcurrency,
-			modelGroup:     request.Config.AntigravityModelGroup,
-			sampleCapacity: request.Config.QuotaSampleCapacity,
-		}, request.Trigger)
-		if err != nil {
-			return err
-		}
+	// Re-read the authoritative roster after the network round. A credential may
+	// have been replaced at the same auth_index while its old token was in
+	// flight. ReplaceRoster resets the new identity to uninitialized and the
+	// captured AuthID/fingerprint below prevents old evidence from crossing it.
+	postProbeInventory, err := client.ListAuthInventory(ctx)
+	if err != nil {
+		return fmt.Errorf("refresh quota guard roster after probe: %w", err)
 	}
+	if !postProbeInventory.Ready {
+		return errAuthInventoryNotReady
+	}
+	postProbeFiles := postProbeInventory.Files
+	if err := r.updateGuardRosterFromFiles(postProbeFiles); err != nil {
+		return fmt.Errorf("reconcile quota guard roster after probe: %w", err)
+	}
+	r.applyGuardEvidence(evidence.ByGroup, probedIdentities, ignoredGuardEvidence)
 
 	if err := store.SaveAtomic(ctx); err != nil {
 		return err
@@ -102,123 +111,33 @@ func (r *Runtime) runProductionTask(ctx context.Context, request TaskRequest) er
 	// Reconcile against the authoritative Host inventory after the potentially
 	// slow Google requests. Credentials may have been added, removed, disabled,
 	// or reprioritized while probing was in flight.
-	projection, err := projectCurrentHost(ctx, client, request, evidence.ByGroup, store, now)
+	projection, err := projectCurrentHost(ctx, client, postProbeFiles, request, evidence.ByGroup, store, now)
 	if err != nil {
 		return err
 	}
-	plan := projection.ControlPlan
 	primarySnapshot := projection.ControlSnapshot
-	if preview != nil && preview.HostFingerprint != hostFingerprint(primarySnapshot.Items) {
-		return fmt.Errorf("quota preview %q is stale: CPA host state changed; refresh quota before applying", preview.ID)
-	}
-
-	// Probe-only: evidence collected, dual snapshot updated, no apply executed (REQ-04).
-	if request.Trigger == TriggerProbe {
-		previewID := evidence.RoundID
-		r.setQuotaPreview(quotaPreview{
-			ID:              previewID,
-			ModelGroup:      request.Config.AntigravityModelGroup,
-			AuthScope:       authScopeKey(request.AuthIndexes),
-			HostFingerprint: hostFingerprint(primarySnapshot.Items),
-			EvidenceByGroup: evidence.ByGroup,
-		})
-		projection.Snapshot.PreviewID = previewID
-		r.setDualSnapshot(projection.Snapshot)
-		result := apply.Result{Snapshot: primarySnapshot}
-		audit := fmt.Sprintf("probe completed: %d probe observations", evidence.Probed)
-		snap := primarySnapshot
-		_, projectErr := r.projectRun(ctx, store, result, audit, RunHistoryEntry{
-			Kind:         KindProbe,
-			Trigger:      string(request.Trigger),
-			ProbeRoundID: evidence.RoundID,
-			Attempted:    evidence.Probed,
-			Succeeded:    len(evidence.ByGroup[request.Config.AntigravityModelGroup].Eligible),
-			Message:      audit,
-			Snapshot:     &snap,
-		})
-		return projectErr
-	}
-
-	if len(plan.Changes) == 0 {
-		projection.Snapshot.PreviewID = ""
-		r.clearQuotaPreview()
-		r.setDualSnapshot(projection.Snapshot)
-		result := apply.Result{Snapshot: primarySnapshot}
-		summary := fmt.Sprintf("all %d credentials in sync, no changes required", len(primarySnapshot.Items))
-		if request.Trigger != TriggerAutoApply {
-			_, projectErr := r.projectSnapshot(ctx, store, result, summary)
-			return projectErr
-		}
-		summary = fmt.Sprintf("auto schedule probed=%d; %s", evidence.Probed, summary)
-		_, projectErr := r.projectRun(ctx, store, result, summary, RunHistoryEntry{
-			Kind:         KindAutoApply,
-			Trigger:      string(request.Trigger),
-			ProbeRoundID: evidence.RoundID,
-			Message:      summary,
-			Snapshot:     &primarySnapshot,
-		})
-		return projectErr
-	}
-
-	transition := apply.NewHostTransition(client)
-	result, err := apply.ExecutePlan(ctx, transition, plan, true)
-	if err != nil {
-		return err
-	}
-	postApplyProjection, err := projectCurrentHost(ctx, client, request, evidence.ByGroup, store, now)
-	if err != nil {
-		return fmt.Errorf("reconcile Host after apply: %w", err)
-	}
-	postApplyProjection.Snapshot.PreviewID = ""
-	r.clearQuotaPreview()
-	r.setDualSnapshot(postApplyProjection.Snapshot)
-
-	summary := resultSummary("apply", result)
-	kind := KindApply
-	probeRoundID := ""
-	if request.Trigger == TriggerAutoApply {
-		kind = KindAutoApply
-		probeRoundID = evidence.RoundID
-		summary = fmt.Sprintf("auto schedule probed=%d; %s", evidence.Probed, summary)
-	}
-
-	_, projectErr := r.projectRun(ctx, store, result, summary, RunHistoryEntry{
-		Kind:         kind,
-		Trigger:      string(request.Trigger),
-		ProbeRoundID: probeRoundID,
-		Message:      summary,
+	previewID := evidence.RoundID
+	r.setQuotaPreview(quotaPreview{
+		ID:              previewID,
+		ModelGroup:      request.Config.AntigravityModelGroup,
+		AuthScope:       authScopeKey(request.AuthIndexes),
+		HostFingerprint: hostFingerprint(primarySnapshot.Items),
+		EvidenceByGroup: evidence.ByGroup,
+	})
+	projection.Snapshot.PreviewID = previewID
+	r.setDualSnapshot(projection.Snapshot)
+	result := apply.Result{Snapshot: primarySnapshot}
+	audit := fmt.Sprintf("probe completed: %d probe observations", evidence.Probed)
+	_, projectErr := r.projectRun(ctx, store, result, audit, RunHistoryEntry{
+		Kind:         KindProbe,
+		Trigger:      string(TriggerProbe),
+		ProbeRoundID: evidence.RoundID,
+		Attempted:    evidence.Probed,
+		Succeeded:    len(evidence.ByGroup[request.Config.AntigravityModelGroup].Eligible),
+		Message:      audit,
 		Snapshot:     &primarySnapshot,
 	})
 	return projectErr
-}
-
-func (r *Runtime) previewForApply(request TaskRequest) (*quotaPreview, error) {
-	previewID := strings.TrimSpace(request.PreviewID)
-	if previewID == "" {
-		return nil, errors.New("no pending quota preview; refresh quota before applying")
-	}
-	preview := r.currentQuotaPreview()
-	if preview == nil || preview.ID != previewID {
-		return nil, fmt.Errorf("quota preview %q is unavailable; refresh quota before applying", previewID)
-	}
-	if preview.ModelGroup != request.Config.AntigravityModelGroup {
-		return nil, fmt.Errorf("quota preview %q belongs to another control model group; refresh quota before applying", previewID)
-	}
-	if preview.AuthScope != authScopeKey(request.AuthIndexes) {
-		return nil, fmt.Errorf("quota preview %q belongs to another credential scope; refresh quota before applying", previewID)
-	}
-	if _, ok := preview.EvidenceByGroup[request.Config.AntigravityModelGroup]; !ok {
-		return nil, fmt.Errorf("quota preview %q has no evidence for the control model group; refresh quota before applying", previewID)
-	}
-	return preview, nil
-}
-
-func cloneEvidenceByGroup(source map[config.AntigravityModelGroup]evidence.Result) map[config.AntigravityModelGroup]evidence.Result {
-	cloned := make(map[config.AntigravityModelGroup]evidence.Result, len(source))
-	for group, result := range source {
-		cloned[group] = cloneEvidence(result)
-	}
-	return cloned
 }
 
 func authScopeKey(authIndexes []string) string {
@@ -268,18 +187,15 @@ func hostFingerprint(items []apply.SnapshotItem) string {
 func projectCurrentHost(
 	ctx context.Context,
 	client *host.Client,
+	files []host.AuthFile,
 	request TaskRequest,
 	evidenceByGroup map[config.AntigravityModelGroup]evidence.Result,
 	store *state.Store,
 	now time.Time,
 ) (DualModelGroupProjection, error) {
-	files, err := client.ListAuthFiles(ctx)
-	if err != nil {
-		return DualModelGroupProjection{}, err
-	}
 	credentials := credentialsFromAuthFiles(files)
 	credentials = filterCredentialsByAuthIndex(credentials, request.AuthIndexes)
-	credentials, _, err = enrichCredentialsFromAuthDocuments(ctx, client, credentials)
+	credentials, _, err := enrichCredentialsFromAuthDocuments(ctx, client, credentials)
 	if err != nil {
 		return DualModelGroupProjection{}, err
 	}
@@ -340,7 +256,6 @@ func credentialsFromAuthFiles(files []host.AuthFile) []core.Credential {
 				Account:         file.Account,
 				Email:           file.Email,
 				PlanType:        core.PlanTypeUnknown,
-				RawJSON:         append([]byte(nil), file.RawJSON...),
 			})
 		}
 	}
@@ -351,8 +266,7 @@ func isAntigravityAuthFile(file host.AuthFile) bool {
 	provider := strings.ToLower(strings.TrimSpace(file.Provider))
 	credType := strings.ToLower(strings.TrimSpace(file.Type))
 	name := strings.ToLower(strings.TrimSpace(file.Name))
-	return provider == "antigravity" || provider == "google" || provider == "gemini" || provider == "google-antigravity" ||
-		credType == "antigravity" || credType == "google" || credType == "gemini" ||
+	return guard.IsAntigravityProvider(provider) || strings.Contains(credType, "antigravity") ||
 		strings.Contains(name, "antigravity")
 }
 

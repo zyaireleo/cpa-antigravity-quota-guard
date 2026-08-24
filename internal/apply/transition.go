@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"antigravity-priority/internal/core"
-	"antigravity-priority/internal/host"
-	"antigravity-priority/internal/priority"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/priority"
 )
 
 // Outcome is the only Host outcome vocabulary exposed by a Host Transition.

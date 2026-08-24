@@ -2,18 +2,17 @@ package runtime_test
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"antigravity-priority/internal/apply"
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/core"
-	"antigravity-priority/internal/evidence"
-	"antigravity-priority/internal/priority"
-	"antigravity-priority/internal/runtime"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/apply"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/evidence"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/priority"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/runtime"
 )
 
 func TestProjectDualModelGroups_ControlDirectionsAndIndependentEvidence(t *testing.T) {
@@ -197,13 +196,13 @@ func TestRuntime_LatestSnapshotFallbackIsStableAndComplete(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(previousDir) })
+	cachePath := filepath.Join(t.TempDir(), "projection-fallback.json")
 	r := runtime.New(runtime.Options{
 		Clock:          fixedClock{now: now},
-		StateCachePath: filepath.Join(t.TempDir(), "startup-cache.json"),
+		StateCachePath: cachePath,
 	})
-	cachePath := filepath.Join(t.TempDir(), "projection-fallback.json")
 	if _, err := r.Register(context.Background(), runtime.RegisterRequest{
-		ConfigYAML: fmt.Sprintf("state_cache_path: %q\n", cachePath),
+		ConfigYAML: "",
 	}); err != nil {
 		t.Fatal(err)
 	}

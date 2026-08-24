@@ -5,9 +5,9 @@ import (
 	"errors"
 	"time"
 
-	"antigravity-priority/internal/apply"
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/host"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/apply"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
 )
 
 // ErrRunInProgress indicates that a priority scheduling run is already active.
@@ -19,6 +19,11 @@ var ErrShutdown = errors.New("runtime: shutdown")
 // ErrInvalidRequest indicates that the CPA JSON envelope request is invalid.
 var ErrInvalidRequest = errors.New("runtime: invalid request")
 
+// ErrLegacyMutationDisabled is returned by the retired priority/disabled
+// write-back use cases. The quota guard is deliberately read-only with respect
+// to CPA auth documents.
+var ErrLegacyMutationDisabled = errors.New("runtime: legacy auth mutation is disabled")
+
 const (
 	// Plugin JSON-RPC Methods
 	MethodPluginRegister     = "plugin.register"
@@ -26,6 +31,10 @@ const (
 	MethodPluginShutdown     = "plugin.shutdown"
 	MethodManagementRegister = "management.register"
 	MethodManagementHandle   = "management.handle"
+	MethodSchedulerPick      = "scheduler.pick"
+	MethodUsageHandle        = "usage.handle"
+	MethodRequestBefore      = "request.intercept_before"
+	MethodRequestAfter       = "request.intercept_after"
 	MethodFilterResponse     = "filter.response"
 	MethodFilterComplete     = "filter.complete"
 	MethodFilterError        = "filter.error"
@@ -105,12 +114,16 @@ type RunHistoryEntry struct {
 
 // RegisterRequest is the JSON request payload for plugin.register.
 type RegisterRequest struct {
-	ConfigYAML string `json:"config_yaml"`
+	ConfigYAML    string   `json:"config_yaml"`
+	SchemaVersion uint32   `json:"schema_version"`
+	HostFeatures  []string `json:"host_features,omitempty"`
 }
 
 // ReconfigureRequest is the JSON request payload for plugin.reconfigure.
 type ReconfigureRequest struct {
-	ConfigYAML string `json:"config_yaml"`
+	ConfigYAML    string   `json:"config_yaml"`
+	SchemaVersion uint32   `json:"schema_version"`
+	HostFeatures  []string `json:"host_features,omitempty"`
 }
 
 // RegisterResult is the metadata returned to CPA on registration.
@@ -150,4 +163,6 @@ type Options struct {
 	// to isolate runtime instances in tests; production callers may leave it
 	// empty to use the configured default path.
 	StateCachePath string
+	// GuardStatePath overrides the breaker state path for isolated tests.
+	GuardStatePath string
 }

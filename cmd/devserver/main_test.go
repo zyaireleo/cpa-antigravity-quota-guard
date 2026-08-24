@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/host"
-	"antigravity-priority/internal/management"
-	"antigravity-priority/internal/provider/antigravity"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/provider/antigravity"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/runtime"
 )
 
 type devTestClock struct {
@@ -186,7 +187,7 @@ func TestDevHostReturnsBothModelGroupsAndQuotaLifecycle(t *testing.T) {
 	}
 }
 
-func TestDevRuntimeUsesProductionPathForProbeApplyAndManagement(t *testing.T) {
+func TestDevRuntimeUsesProductionPathForProbeAndGuardManagement(t *testing.T) {
 	now := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
 	clock := &devTestClock{now: now}
 	dev, err := newDevServer(devServerOptions{
@@ -206,6 +207,19 @@ func TestDevRuntimeUsesProductionPathForProbeApplyAndManagement(t *testing.T) {
 		}
 	}()
 
+	before := make(map[string]string)
+	files, err := dev.host.ListAuthFiles(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		document, err := dev.host.GetAuth(context.Background(), file.AuthIndex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[file.AuthIndex] = string(document.JSON)
+	}
+
 	if err := dev.runtime.Probe(context.Background(), config.AntigravityModelGroupGemini, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -218,70 +232,19 @@ func TestDevRuntimeUsesProductionPathForProbeApplyAndManagement(t *testing.T) {
 			t.Fatalf("%s item count = %d, want 10", group, len(snapshot.Groups[group].Items))
 		}
 	}
-	if snapshot.PreviewID == "" {
-		t.Fatal("probe did not publish a preview id")
+	if err := dev.runtime.ManualApplyWithPreview(context.Background(), config.AntigravityModelGroupGemini, nil, snapshot.PreviewID); !errors.Is(err, runtime.ErrLegacyMutationDisabled) {
+		t.Fatalf("manual auth mutation was not disabled: %v", err)
 	}
-	if err := dev.runtime.ManualApplyWithPreview(context.Background(), config.AntigravityModelGroupGemini, nil, snapshot.PreviewID); err != nil {
-		t.Fatalf("manual apply with preview failed: %v", err)
-	}
-	postApplySnapshot, err := dev.runtime.LatestSnapshot(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if postApplySnapshot.PreviewID != "" || len(postApplySnapshot.Groups["gemini"].Changes) != 0 {
-		t.Fatalf("post-apply snapshot = %#v; want consumed preview and no pending changes", postApplySnapshot)
-	}
-
-	samples, err := dev.runtime.GetSamples(context.Background(), "dev-auth-001", "gemini")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(samples) != 1 {
-		t.Fatalf("initial Gemini samples = %d, want 1", len(samples))
-	}
-	claudeSamples, err := dev.runtime.GetSamples(context.Background(), "dev-auth-001", "claude_gpt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(claudeSamples) != 1 {
-		t.Fatalf("initial Claude/GPT samples = %d, want 1", len(claudeSamples))
-	}
-
 	dynamic, err := dev.runtime.GetDynamicConfig(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	dynamic.AutoApply = true
-	dynamic.Interval = "1m"
-	if err := dev.runtime.SetDynamicConfig(context.Background(), dynamic); err != nil {
-		t.Fatal(err)
-	}
-	if err := dev.runtime.AutoApply(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	diagnostics, err := dev.runtime.Diagnostics(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	scheduler, ok := diagnostics["scheduler"].(map[string]any)
-	if !ok {
-		t.Fatalf("scheduler diagnostics = %#v", diagnostics["scheduler"])
-	}
-	if last, ok := scheduler["last_auto_apply_at"].(time.Time); !ok || last.IsZero() {
-		t.Fatalf("auto scheduler did not record a run: %#v", scheduler["last_auto_apply_at"])
+	if err := dev.runtime.SetDynamicConfig(context.Background(), dynamic); err == nil {
+		t.Fatal("legacy auto_apply was accepted")
 	}
 
-	if err := dev.runtime.Probe(context.Background(), config.AntigravityModelGroupGemini, nil); err != nil {
-		t.Fatal(err)
-	}
-	previewSnapshot, err := dev.runtime.LatestSnapshot(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := dev.runtime.ManualApplyWithPreview(context.Background(), config.AntigravityModelGroupGemini, nil, previewSnapshot.PreviewID); err != nil {
-		t.Fatal(err)
-	}
-	files, err := dev.host.ListAuthFiles(context.Background())
+	files, err = dev.host.ListAuthFiles(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,30 +253,53 @@ func TestDevRuntimeUsesProductionPathForProbeApplyAndManagement(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var raw struct {
-			Priority *int `json:"priority"`
-		}
-		if err := json.Unmarshal(document.JSON, &raw); err != nil {
-			t.Fatal(err)
-		}
-		if raw.Priority == nil {
-			t.Fatalf("apply did not write priority for %s: %s", file.AuthIndex, document.JSON)
+		if string(document.JSON) != before[file.AuthIndex] {
+			t.Fatalf("quota guard changed auth document %s", file.AuthIndex)
 		}
 	}
 
-	server := httptest.NewServer(dev.runtime.ManagementHandler())
+	const devManagementKey = "dev-test-management-key"
+	server := httptest.NewServer(guardDevHandler(dev.runtime, devManagementKey))
 	defer server.Close()
-	response, err := http.Get(server.URL + management.PathDiagnostics)
+	resourceResponse, err := http.Get(server.URL + "/v0/resource/plugins/cpa-antigravity-quota-guard/status")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("diagnostics status = %d", response.StatusCode)
+	if resourceResponse.StatusCode != http.StatusOK {
+		t.Fatalf("resource status = %d", resourceResponse.StatusCode)
 	}
-	if err := response.Body.Close(); err != nil {
+	_ = resourceResponse.Body.Close()
+
+	managementURL := server.URL + "/v0/management/cpa-antigravity-quota-guard/status"
+	unauthorized, err := http.Get(managementURL)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if unauthorized.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("management without key status = %d", unauthorized.StatusCode)
+	}
+	_ = unauthorized.Body.Close()
+	authorizedRequest, err := http.NewRequest(http.MethodGet, managementURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorizedRequest.Header.Set("X-Management-Key", devManagementKey)
+	authorized, err := http.DefaultClient.Do(authorizedRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorized.StatusCode != http.StatusOK {
+		t.Fatalf("management with key status = %d", authorized.StatusCode)
+	}
+	_ = authorized.Body.Close()
 
+	samples, err := dev.runtime.GetSamples(context.Background(), "dev-auth-001", "gemini")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("initial Gemini samples = %d, want 1", len(samples))
+	}
 	clock.now = clock.now.Add(time.Minute)
 	if err := dev.runtime.Probe(context.Background(), config.AntigravityModelGroupGemini, nil); err != nil {
 		t.Fatal(err)
@@ -324,5 +310,21 @@ func TestDevRuntimeUsesProductionPathForProbeApplyAndManagement(t *testing.T) {
 	}
 	if len(updatedSamples) < 2 {
 		t.Fatalf("second probe did not append changed quota sample: %+v", updatedSamples)
+	}
+}
+
+func TestValidateDevListenAddressDefaultsToLoopbackSafety(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:8080", "localhost:8080", "[::1]:8080"} {
+		if err := validateDevListenAddress(address, false); err != nil {
+			t.Fatalf("loopback address %q rejected: %v", address, err)
+		}
+	}
+	for _, address := range []string{":8080", "0.0.0.0:8080", "192.0.2.10:8080"} {
+		if err := validateDevListenAddress(address, false); err == nil {
+			t.Fatalf("non-loopback address %q accepted without unsafe flag", address)
+		}
+		if err := validateDevListenAddress(address, true); err != nil {
+			t.Fatalf("non-loopback address %q rejected with unsafe flag: %v", address, err)
+		}
 	}
 }

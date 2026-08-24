@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"antigravity-priority/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
 )
 
 func TestDefault(t *testing.T) {
 	cfg := config.Default()
+	if config.PluginID != "cpa-antigravity-quota-guard" || config.DirectoryName != config.PluginID || config.DynamicLibraryBaseName != config.PluginID || config.CPAConfigKey != config.PluginID {
+		t.Fatalf("plugin identity constants are not consistently renamed: id=%q dir=%q library=%q config=%q", config.PluginID, config.DirectoryName, config.DynamicLibraryBaseName, config.CPAConfigKey)
+	}
 
 	if !cfg.Enabled {
 		t.Errorf("expected Enabled=true, got %v", cfg.Enabled)
@@ -41,6 +45,36 @@ func TestDefault(t *testing.T) {
 	if cfg.StateCachePath != config.DefaultStateCachePath {
 		t.Errorf("expected StateCachePath=%s, got %s", config.DefaultStateCachePath, cfg.StateCachePath)
 	}
+	if cfg.StateCachePath == cfg.Guard.StatePath {
+		t.Fatal("legacy quota cache and guard breaker state must use separate files")
+	}
+	if cfg.Guard.Mode != config.GuardModeObserve {
+		t.Errorf("expected guard mode observe, got %q", cfg.Guard.Mode)
+	}
+	if cfg.Guard.ManagedAuth != config.ManagedAuthAllAntigravity {
+		t.Errorf("expected all_antigravity management, got %q", cfg.Guard.ManagedAuth)
+	}
+	if want := []config.AntigravityModelGroup{config.AntigravityModelGroupGemini, config.AntigravityModelGroupClaudeGPT}; !reflect.DeepEqual(cfg.Guard.EnforcedGroups, want) {
+		t.Errorf("enforced groups = %#v, want %#v", cfg.Guard.EnforcedGroups, want)
+	}
+	if !cfg.Guard.RequireUniformPriority {
+		t.Error("expected uniform priority requirement by default")
+	}
+	if cfg.Guard.ProbeInterval != 15*time.Minute || cfg.Guard.EvidenceMaxAge != 30*time.Minute {
+		t.Errorf("unexpected evidence timing defaults: probe=%s max_age=%s", cfg.Guard.ProbeInterval, cfg.Guard.EvidenceMaxAge)
+	}
+	if cfg.Guard.Generic429.Threshold != 2 || cfg.Guard.Generic429.Window != time.Minute || cfg.Guard.Generic429.InitialCooldown != 15*time.Minute || cfg.Guard.Generic429.MaxCooldown != 30*time.Minute {
+		t.Errorf("unexpected generic 429 defaults: %+v", cfg.Guard.Generic429)
+	}
+	if cfg.Guard.HalfOpenLease != 30*time.Second {
+		t.Errorf("expected half-open lease 30s, got %s", cfg.Guard.HalfOpenLease)
+	}
+	if cfg.Guard.UnknownAuthPolicy != config.GuardPolicyFailClosed || cfg.Guard.UnknownModelPolicy != config.GuardPolicyFailClosed {
+		t.Errorf("unknown entity policies must fail closed: auth=%q model=%q", cfg.Guard.UnknownAuthPolicy, cfg.Guard.UnknownModelPolicy)
+	}
+	if cfg.Guard.StatePath != config.DefaultGuardStatePath {
+		t.Errorf("state path=%q, want %q", cfg.Guard.StatePath, config.DefaultGuardStatePath)
+	}
 	if cfg.PriorityRules.BoostStartPriority != 999 {
 		t.Errorf("expected BoostStartPriority=999, got %v", cfg.PriorityRules.BoostStartPriority)
 	}
@@ -49,12 +83,262 @@ func TestDefault(t *testing.T) {
 	}
 }
 
+func TestLoadBytes_GuardJSON(t *testing.T) {
+	jsonData := []byte(`{
+		"enabled": true,
+		"mode": "enforce",
+		"managed_auth": "all_antigravity",
+		"enforced_groups": ["claude_gpt"],
+		"require_uniform_priority": true,
+		"probe_interval": "20m",
+		"evidence_max_age": "45m",
+		"generic_429": {
+			"threshold": 3,
+			"window": "90s",
+			"initial_cooldown": "20m",
+			"max_cooldown": "40m"
+		},
+		"half_open_lease": "45s",
+		"unknown_auth_policy": "fail_closed",
+		"unknown_model_policy": "fail_closed",
+		"state_path": "data/cpa-antigravity-quota-guard/custom/state.json"
+	}`)
+
+	cfg, warnings, err := config.LoadBytes(jsonData)
+	if err != nil {
+		t.Fatalf("LoadBytes JSON: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if cfg.Guard.Mode != config.GuardModeEnforce || cfg.Guard.ManagedAuth != config.ManagedAuthAllAntigravity {
+		t.Fatalf("unexpected guard identity: %+v", cfg.Guard)
+	}
+	if want := []config.AntigravityModelGroup{config.AntigravityModelGroupClaudeGPT}; !reflect.DeepEqual(cfg.Guard.EnforcedGroups, want) {
+		t.Fatalf("groups=%#v, want %#v", cfg.Guard.EnforcedGroups, want)
+	}
+	if cfg.Guard.ProbeInterval != 20*time.Minute || cfg.Guard.EvidenceMaxAge != 45*time.Minute || cfg.Guard.HalfOpenLease != 45*time.Second {
+		t.Fatalf("unexpected guard timing: %+v", cfg.Guard)
+	}
+	if cfg.Guard.Generic429.Threshold != 3 || cfg.Guard.Generic429.Window != 90*time.Second || cfg.Guard.Generic429.InitialCooldown != 20*time.Minute || cfg.Guard.Generic429.MaxCooldown != 40*time.Minute {
+		t.Fatalf("unexpected generic 429 config: %+v", cfg.Guard.Generic429)
+	}
+	if cfg.Guard.StatePath != "data/cpa-antigravity-quota-guard/custom/state.json" {
+		t.Fatalf("state path=%q", cfg.Guard.StatePath)
+	}
+}
+
+func TestLoadBytes_GuardYAMLForms(t *testing.T) {
+	t.Run("new CPA plugin key with nested map and list", func(t *testing.T) {
+		yamlData := []byte(`
+plugins:
+  configs:
+    cpa-antigravity-quota-guard:
+      enabled: true
+      mode: enforce
+      managed_auth: all_antigravity
+      enforced_groups:
+        - gemini
+        - claude_gpt
+      require_uniform_priority: true
+      probe_interval: 15m
+      evidence_max_age: 30m
+      generic_429:
+        threshold: 2
+        window: 60s
+        initial_cooldown: 15m
+        max_cooldown: 30m
+      half_open_lease: 30s
+      unknown_auth_policy: fail_closed
+      unknown_model_policy: fail_closed
+      state_path: data/cpa-antigravity-quota-guard/state.json
+`)
+		cfg, _, err := config.LoadBytes(yamlData)
+		if err != nil {
+			t.Fatalf("LoadBytes nested YAML: %v", err)
+		}
+		if cfg.Guard.Mode != config.GuardModeEnforce || len(cfg.Guard.EnforcedGroups) != 2 || cfg.Guard.Generic429.Window != time.Minute {
+			t.Fatalf("unexpected nested YAML result: %+v", cfg.Guard)
+		}
+	})
+
+	t.Run("inline comma list and flat generic aliases", func(t *testing.T) {
+		yamlData := []byte(`
+mode: observe
+managed_auth: all_antigravity
+enforced_groups: gemini, claude_gpt
+require_uniform_priority: false
+probe_interval: 20m
+evidence_max_age: 40m
+generic_429_threshold: 3
+generic_429_window: 2m
+generic_429_initial_cooldown: 10m
+generic_429_max_cooldown: 20m
+half_open_lease: 20s
+unknown_auth_policy: fail_closed
+unknown_model_policy: fail_closed
+state_path: data/cpa-antigravity-quota-guard/observe.json
+`)
+		cfg, _, err := config.LoadBytes(yamlData)
+		if err != nil {
+			t.Fatalf("LoadBytes flat YAML: %v", err)
+		}
+		if cfg.Guard.RequireUniformPriority {
+			t.Fatal("observe mode should accept explicitly disabled uniform-priority requirement")
+		}
+		if len(cfg.Guard.EnforcedGroups) != 2 || cfg.Guard.Generic429.Threshold != 3 || cfg.Guard.Generic429.Window != 2*time.Minute {
+			t.Fatalf("unexpected flat YAML result: %+v", cfg.Guard)
+		}
+	})
+}
+
+func TestGuardDynamicRoundTrip(t *testing.T) {
+	base := config.Default()
+	dyn := base.Dynamic()
+	dyn.Guard.Mode = config.GuardModeEnforce
+	dyn.Guard.EnforcedGroups = []string{"gemini"}
+	dyn.Guard.ProbeInterval = "10m"
+	dyn.Guard.EvidenceMaxAge = "20m"
+	merged, err := dyn.ApplyTo(base)
+	if err != nil {
+		t.Fatalf("ApplyTo: %v", err)
+	}
+	if merged.Guard.Mode != config.GuardModeEnforce || merged.Guard.ProbeInterval != 10*time.Minute || len(merged.Guard.EnforcedGroups) != 1 {
+		t.Fatalf("unexpected applied guard: %+v", merged.Guard)
+	}
+
+	encoded, err := json.Marshal(merged.Dynamic())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"guard"`)) || !bytes.Contains(encoded, []byte(`"generic_429"`)) || !bytes.Contains(encoded, []byte(`"state_path"`)) {
+		t.Fatalf("guard serialization is not explicit: %s", encoded)
+	}
+	var decoded config.DynamicConfig
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := decoded.Validate(); err != nil {
+		t.Fatalf("round-tripped dynamic config invalid: %v", err)
+	}
+}
+
+func TestGuardValidation(t *testing.T) {
+	t.Run("state path policy", func(t *testing.T) {
+		valid := []string{
+			"data/cpa-antigravity-quota-guard/state.json",
+			"data/cpa-antigravity-quota-guard/nested/state.json",
+		}
+		for _, value := range valid {
+			if err := config.ValidateGuardStatePath(value); err != nil {
+				t.Errorf("valid path %q rejected: %v", value, err)
+			}
+		}
+		invalid := []string{
+			"/tmp/state.json",
+			`C:\\temp\\state.json`,
+			"data/cpa-antigravity-quota-guard/../state.json",
+			"data/other/state.json",
+			"data/cpa-antigravity-quota-guard/auth/state.json",
+			"data/cpa-antigravity-quota-guard/credentials-prod/state.json",
+		}
+		for _, value := range invalid {
+			if err := config.ValidateGuardStatePath(value); err == nil {
+				t.Errorf("invalid path %q accepted", value)
+			}
+		}
+	})
+
+	t.Run("state cache path policy", func(t *testing.T) {
+		valid := []string{
+			"data/cpa-antigravity-quota-guard/quota-cache.json",
+			"data/cpa-antigravity-quota-guard/nested/cache.json",
+		}
+		for _, value := range valid {
+			if err := config.ValidateStateCachePath(value); err != nil {
+				t.Errorf("valid path %q rejected: %v", value, err)
+			}
+		}
+		for _, value := range []string{
+			"/tmp/cache.json",
+			`C:\temp\cache.json`,
+			"data/cpa-antigravity-quota-guard/../cache.json",
+			"data/other/cache.json",
+			"data/cpa-antigravity-quota-guard/auth/cache.json",
+		} {
+			if err := config.ValidateStateCachePath(value); err == nil {
+				t.Errorf("invalid path %q accepted", value)
+			}
+		}
+	})
+
+	invalidCases := []struct {
+		name    string
+		mutate  func(*config.GuardDynamic)
+		wantErr string
+	}{
+		{"mode", func(g *config.GuardDynamic) { g.Mode = "active" }, "mode must be"},
+		{"managed auth", func(g *config.GuardDynamic) { g.ManagedAuth = "all" }, "managed_auth"},
+		{"empty groups", func(g *config.GuardDynamic) { g.EnforcedGroups = nil }, "enforced_groups"},
+		{"duplicate groups", func(g *config.GuardDynamic) { g.EnforcedGroups = []string{"gemini", "GEMINI"} }, "duplicate"},
+		{"enforce requires uniform priority", func(g *config.GuardDynamic) { g.Mode = config.GuardModeEnforce; g.RequireUniformPriority = false }, "require_uniform_priority"},
+		{"short probe", func(g *config.GuardDynamic) { g.ProbeInterval = "30s" }, "probe_interval"},
+		{"stale age", func(g *config.GuardDynamic) { g.EvidenceMaxAge = "1m" }, "evidence_max_age"},
+		{"threshold", func(g *config.GuardDynamic) { g.Generic429.Threshold = 0 }, "threshold"},
+		{"cooldown ordering", func(g *config.GuardDynamic) { g.Generic429.MaxCooldown = "1m" }, "max_cooldown"},
+		{"half open", func(g *config.GuardDynamic) { g.HalfOpenLease = "0s" }, "half_open_lease"},
+		{"auth policy", func(g *config.GuardDynamic) { g.UnknownAuthPolicy = "allow" }, "unknown_auth_policy"},
+		{"model policy", func(g *config.GuardDynamic) { g.UnknownModelPolicy = "allow" }, "unknown_model_policy"},
+	}
+	for _, tt := range invalidCases {
+		t.Run(tt.name, func(t *testing.T) {
+			dyn := config.Default().Dynamic()
+			tt.mutate(&dyn.Guard)
+			err := dyn.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error=%v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadBytes_InvalidGuardIsErrInvalidConfig(t *testing.T) {
+	for name, raw := range map[string]string{
+		"absolute state path":  `{"state_path":"/tmp/state.json"}`,
+		"absolute cache path":  `{"state_cache_path":"/tmp/cache.json"}`,
+		"cache auth directory": `{"state_cache_path":"data/cpa-antigravity-quota-guard/auth/cache.json"}`,
+		"unknown model":        `{"enforced_groups":["unknown"]}`,
+		"bad duration":         `{"probe_interval":"later"}`,
+		"shared state files":   `{"state_cache_path":"data/cpa-antigravity-quota-guard/state.json"}`,
+		"legacy auto apply":    `{"auto_apply":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := config.LoadBytes([]byte(raw))
+			if err == nil || !errors.Is(err, config.ErrInvalidConfig) {
+				t.Fatalf("LoadBytes error=%v, want ErrInvalidConfig", err)
+			}
+		})
+	}
+}
+
+func TestLoadBytesRejectsAutoApplyYAML(t *testing.T) {
+	_, _, err := config.LoadBytes([]byte(`
+plugins:
+  configs:
+    cpa-antigravity-quota-guard:
+      auto_apply: true
+`))
+	if err == nil || !errors.Is(err, config.ErrInvalidConfig) || !strings.Contains(err.Error(), "auto_apply") {
+		t.Fatalf("LoadBytes error=%v, want unsupported auto_apply ErrInvalidConfig", err)
+	}
+}
+
 func TestLoadBytes_Empty(t *testing.T) {
 	cfg, warnings, err := config.LoadBytes(nil)
 	if err != nil {
 		t.Fatalf("unexpected error on nil: %v", err)
 	}
-	if cfg != config.Default() {
+	if !reflect.DeepEqual(cfg, config.Default()) {
 		t.Errorf("expected default config on nil, got %+v", cfg)
 	}
 	if len(warnings) != 0 {
@@ -65,7 +349,7 @@ func TestLoadBytes_Empty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error on empty bytes: %v", err)
 	}
-	if cfg != config.Default() {
+	if !reflect.DeepEqual(cfg, config.Default()) {
 		t.Errorf("expected default config on empty bytes, got %+v", cfg)
 	}
 	if len(warnings) != 0 {
@@ -76,7 +360,7 @@ func TestLoadBytes_Empty(t *testing.T) {
 func TestLoadBytes_JSON(t *testing.T) {
 	jsonData := []byte(`{
 		"enabled": false,
-		"state_cache_path": "custom/path.json",
+		"state_cache_path": "data/cpa-antigravity-quota-guard/custom.json",
 		"ignored_business_field": "some_value"
 	}`)
 
@@ -91,8 +375,8 @@ func TestLoadBytes_JSON(t *testing.T) {
 	if cfg.Enabled {
 		t.Errorf("expected Enabled=false, got %v", cfg.Enabled)
 	}
-	if cfg.StateCachePath != "custom/path.json" {
-		t.Errorf("expected StateCachePath='custom/path.json', got %v", cfg.StateCachePath)
+	if cfg.StateCachePath != "data/cpa-antigravity-quota-guard/custom.json" {
+		t.Errorf("unexpected StateCachePath %q", cfg.StateCachePath)
 	}
 	// Defaults preserved for business fields
 	if cfg.Interval != 15*time.Minute {
@@ -104,7 +388,7 @@ func TestLoadBytes_YAML(t *testing.T) {
 	yamlData := []byte(`
 # Plugin Configuration
 enabled: false
-state_cache_path: data/custom-cache.json
+state_cache_path: data/cpa-antigravity-quota-guard/custom-cache.json
 `)
 
 	cfg, _, err := config.LoadBytes(yamlData)
@@ -115,8 +399,8 @@ state_cache_path: data/custom-cache.json
 	if cfg.Enabled {
 		t.Errorf("expected Enabled=false, got %v", cfg.Enabled)
 	}
-	if cfg.StateCachePath != "data/custom-cache.json" {
-		t.Errorf("expected StateCachePath='data/custom-cache.json', got %v", cfg.StateCachePath)
+	if cfg.StateCachePath != "data/cpa-antigravity-quota-guard/custom-cache.json" {
+		t.Errorf("unexpected StateCachePath %q", cfg.StateCachePath)
 	}
 }
 
@@ -126,7 +410,7 @@ plugins:
   configs:
     antigravity-priority:
       enabled: true
-      state_cache_path: data/cpa-cache.json
+	      state_cache_path: data/cpa-antigravity-quota-guard/cpa-cache.json
 `)
 
 	cfg, _, err := config.LoadBytes(fullCPAConfig)
@@ -137,8 +421,23 @@ plugins:
 	if !cfg.Enabled {
 		t.Errorf("expected Enabled=true, got %v", cfg.Enabled)
 	}
-	if cfg.StateCachePath != "data/cpa-cache.json" {
-		t.Errorf("expected StateCachePath='data/cpa-cache.json', got %v", cfg.StateCachePath)
+	if cfg.StateCachePath != "data/cpa-antigravity-quota-guard/cpa-cache.json" {
+		t.Errorf("unexpected StateCachePath %q", cfg.StateCachePath)
+	}
+}
+
+func TestLoadBytesParsesRequiredSchedulerProviderMarker(t *testing.T) {
+	cfg, _, err := config.LoadBytes([]byte(`
+enabled: true
+required-scheduler-for:
+  - Antigravity
+  - antigravity
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.RequiredSchedulerFor) != 1 || cfg.RequiredSchedulerFor[0] != "antigravity" {
+		t.Fatalf("required scheduler providers = %#v", cfg.RequiredSchedulerFor)
 	}
 }
 
@@ -186,7 +485,7 @@ plugins:
 	if err != nil {
 		t.Fatalf("unexpected error parsing host config with lists: %v", err)
 	}
-	if cfg != config.Default() {
+	if !reflect.DeepEqual(cfg, config.Default()) {
 		t.Errorf("expected default config when plugin block absent from host config, got %+v", cfg)
 	}
 	if len(warnings) != 0 {
@@ -230,7 +529,7 @@ func TestDynamicConfig_ValidateAndApplyTo(t *testing.T) {
 
 	t.Run("valid dynamic config applies cleanly", func(t *testing.T) {
 		dyn := config.DynamicConfig{
-			AutoApply:                true,
+			AutoApply:                false,
 			Interval:                 "30m",
 			AntigravityModelGroup:    "claude_gpt",
 			MaxConcurrency:           12,
@@ -256,8 +555,8 @@ func TestDynamicConfig_ValidateAndApplyTo(t *testing.T) {
 			t.Fatalf("expected valid ApplyTo, got %v", err)
 		}
 
-		if !merged.AutoApply {
-			t.Errorf("expected AutoApply=true")
+		if merged.AutoApply {
+			t.Errorf("expected AutoApply=false")
 		}
 		if merged.Interval != 30*time.Minute {
 			t.Errorf("expected Interval=30m, got %v", merged.Interval)
@@ -306,6 +605,11 @@ func TestDynamicConfig_ValidateAndApplyTo(t *testing.T) {
 			mutate  func(dyn *config.DynamicConfig)
 			wantErr string
 		}{
+			{
+				name:    "auto apply is forbidden",
+				mutate:  func(dyn *config.DynamicConfig) { dyn.AutoApply = true },
+				wantErr: "auto_apply is no longer supported",
+			},
 			{
 				name:    "invalid interval duration string",
 				mutate:  func(dyn *config.DynamicConfig) { dyn.Interval = "invalid" },

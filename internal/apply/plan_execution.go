@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"antigravity-priority/internal/priority"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/priority"
 )
 
 // ExecutePlan sends Planner changes through the single Host Transition seam.

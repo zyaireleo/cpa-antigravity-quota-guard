@@ -3,7 +3,7 @@ package core_test
 import (
 	"testing"
 
-	"antigravity-priority/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
 )
 
 func TestModelGroup(t *testing.T) {

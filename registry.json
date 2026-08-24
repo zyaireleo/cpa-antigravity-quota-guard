@@ -2,15 +2,15 @@
   "schema_version": 1,
   "plugins": [
     {
-      "id": "antigravity-priority",
-      "name": "Antigravity Smart Priority",
-      "description": "Intelligent dual-window quota pacing, Weekly Urgency scheduler, and Dynamic Boost Horizon optimizer for Google Antigravity credentials.",
-      "author": "ygq-future",
-      "version": "1.2.9",
-      "repository": "https://github.com/ygq-future/antigravity-priority",
-      "homepage": "https://github.com/ygq-future/antigravity-priority",
+      "id": "cpa-antigravity-quota-guard",
+      "name": "CPA Antigravity Quota Guard",
+      "description": "Per-account and per-model-group quota circuit breaker for Google Antigravity credentials in CLIProxyAPI.",
+      "author": "zyaireleo",
+      "version": "0.1.1",
+      "repository": "https://github.com/zyaireleo/cpa-antigravity-quota-guard",
+      "homepage": "https://github.com/zyaireleo/cpa-antigravity-quota-guard",
       "license": "MIT",
-      "tags": ["antigravity", "priority", "quota", "scheduler", "cliproxyapi"]
+      "tags": ["antigravity", "quota", "circuit-breaker", "scheduler", "cliproxyapi"]
     }
   ]
 }

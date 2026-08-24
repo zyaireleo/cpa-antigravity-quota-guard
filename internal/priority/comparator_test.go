@@ -3,7 +3,7 @@ package priority
 import (
 	"testing"
 
-	"antigravity-priority/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
 )
 
 func TestCompareHealthyCandidates(t *testing.T) {

@@ -3,8 +3,8 @@ package antigravity
 import (
 	"time"
 
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
 )
 
 // ModelGroup represents the upstream quota model group in Antigravity.

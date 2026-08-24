@@ -3,7 +3,7 @@ package state
 import (
 	"time"
 
-	"antigravity-priority/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
 )
 
 // ScheduleConfig holds dynamic schedule control state persisted across restarts.

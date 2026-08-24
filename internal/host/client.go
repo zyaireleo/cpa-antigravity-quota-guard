@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 )
 
@@ -34,11 +33,31 @@ func (e *HTTPStatusError) Error() string {
 
 // ListAuthFiles lists host credentials via host.auth.list.
 func (c *Client) ListAuthFiles(ctx context.Context) ([]AuthFile, error) {
+	inventory, err := c.ListAuthInventory(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return inventory.Files, nil
+}
+
+// ListAuthInventory returns the current roster and whether the host has
+// completed its initial auth load. Legacy/dev callback implementations are
+// treated as ready; enforce mode separately requires the versioned host feature
+// before relying on the readiness bit.
+func (c *Client) ListAuthInventory(ctx context.Context) (AuthInventory, error) {
+	if extended, ok := c.callbacks.(AuthInventoryCallbacks); ok {
+		inventory, err := extended.ListAuthInventory(ctx)
+		if err != nil {
+			return AuthInventory{}, fmt.Errorf("host.auth.list: %w", err)
+		}
+		inventory.Files = append([]AuthFile(nil), inventory.Files...)
+		return inventory, nil
+	}
 	files, err := c.callbacks.ListAuthFiles(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("host.auth.list: %w", err)
+		return AuthInventory{}, fmt.Errorf("host.auth.list: %w", err)
 	}
-	return files, nil
+	return AuthInventory{Files: files, Ready: true}, nil
 }
 
 // GetAuth reads physical auth JSON document via host.auth.get.
@@ -47,13 +66,9 @@ func (c *Client) GetAuth(ctx context.Context, authIndex string) (AuthDocument, e
 	if err != nil {
 		return AuthDocument{}, fmt.Errorf("host.auth.get: %w", err)
 	}
-	if len(document.JSON) == 0 && strings.TrimSpace(document.Path) != "" {
-		raw, readErr := os.ReadFile(document.Path)
-		if readErr != nil {
-			return AuthDocument{}, fmt.Errorf("host.auth.get document: %w", readErr)
-		}
-		document.JSON = append(json.RawMessage(nil), raw...)
-	}
+	// CPA owns credential storage. The plugin must consume only the JSON bytes
+	// returned by host.auth.get and must never follow a host-supplied local path.
+	document.JSON = append(json.RawMessage(nil), document.JSON...)
 	return document, nil
 }
 

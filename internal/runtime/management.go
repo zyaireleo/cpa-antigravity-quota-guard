@@ -1,20 +1,18 @@
 package runtime
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 
-	"antigravity-priority/internal/apply"
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/management"
-	"antigravity-priority/internal/state"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/apply"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/management"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/state"
 )
 
 // ManagementRequest represents the HTTP request envelope passed by CPA management.handle.
@@ -52,41 +50,6 @@ type managementRegistration struct {
 
 type managementRunner struct {
 	runtime *Runtime
-}
-
-func (r *Runtime) registerManagement() []byte {
-	result := managementRegistration{
-		Routes: []managementRoute{
-			{Method: http.MethodPost, Path: management.PrefixLegacyPlugin + management.PathRun},
-			{Method: http.MethodPost, Path: management.PrefixLegacyPlugin + management.PathSync},
-			{Method: http.MethodPost, Path: management.PrefixLegacyPlugin + management.PathReset},
-			{Method: http.MethodGet, Path: management.PrefixLegacyPlugin + management.PathDiagnostics},
-			{Method: http.MethodGet, Path: management.PrefixLegacyPlugin + management.PathSnapshotLatest},
-			{Method: http.MethodGet, Path: management.PrefixLegacyPlugin + management.PathScheduleConfig},
-			{Method: http.MethodPost, Path: management.PrefixLegacyPlugin + management.PathScheduleConfig},
-			{Method: http.MethodGet, Path: management.PrefixLegacyPlugin + management.PathRuntimeConfig},
-			{Method: http.MethodPost, Path: management.PrefixLegacyPlugin + management.PathRuntimeConfig},
-			{Method: http.MethodGet, Path: management.PrefixLegacyPlugin + management.PathSamples},
-		},
-		Resources: []managementResource{
-			{Path: management.PathStatus, Menu: "Antigravity Priority", Description: "Shows Antigravity priority status and audit summary."},
-		},
-	}
-	return envelopeManagement(result, nil)
-}
-
-func (r *Runtime) handleManagement(ctx context.Context, raw []byte) []byte {
-	request, err := decodeManagementRequest(raw)
-	if err != nil {
-		return failure(err)
-	}
-	httpRequest, err := request.toHTTPRequest(ctx)
-	if err != nil {
-		return failure(err)
-	}
-	recorder := httptest.NewRecorder()
-	r.management.ServeHTTP(recorder, httpRequest)
-	return envelopeManagement(newManagementResponse(recorder), nil)
 }
 
 func decodeManagementRequest(raw []byte) (ManagementRequest, error) {
@@ -161,64 +124,6 @@ func decodeManagementBody(official string, legacy string) ([]byte, error) {
 		return decoded, nil
 	}
 	return []byte(legacy), nil
-}
-
-func (r ManagementRequest) toHTTPRequest(ctx context.Context) (*http.Request, error) {
-	normalized, source := normalizeManagementPath(r.Path)
-	if !strings.HasPrefix(normalized, "/") {
-		return nil, fmt.Errorf("%w: management path must start with /", ErrInvalidRequest)
-	}
-	path := normalized
-	if r.Query != nil {
-		encoded := r.Query.Encode()
-		if encoded != "" {
-			path += "?" + encoded
-		}
-	}
-	request, err := http.NewRequestWithContext(ctx, r.Method, path, bytes.NewBuffer(r.Body))
-	if err != nil {
-		return nil, fmt.Errorf("%w: build management request: %v", ErrInvalidRequest, err)
-	}
-	if r.Headers != nil {
-		request.Header = r.Headers.Clone()
-	} else {
-		request.Header = make(http.Header)
-	}
-	request.Header.Set(management.RouteSourceHeader, source)
-	return request, nil
-}
-
-func normalizeManagementPath(path string) (normalized string, source string) {
-	resourcePrefix := management.PrefixResourcePlugin
-	managementPrefix := management.PrefixManagementPlugin
-	legacyRoutePrefix := management.PrefixLegacyPlugin
-
-	switch {
-	case path == resourcePrefix:
-		return "/", management.SourceResource
-	case strings.HasPrefix(path, resourcePrefix+"/"):
-		return strings.TrimPrefix(path, resourcePrefix), management.SourceResource
-	case path == managementPrefix:
-		return "/", management.SourceManagement
-	case strings.HasPrefix(path, managementPrefix+"/"):
-		return strings.TrimPrefix(path, managementPrefix), management.SourceManagement
-	case path == legacyRoutePrefix:
-		return "/", management.SourceManagement
-	case strings.HasPrefix(path, legacyRoutePrefix+"/"):
-		return strings.TrimPrefix(path, legacyRoutePrefix), management.SourceManagement
-	default:
-		return path, management.SourceManagement
-	}
-}
-
-func newManagementResponse(recorder *httptest.ResponseRecorder) ManagementResponse {
-	result := recorder.Result()
-	return ManagementResponse{
-		StatusCode:  result.StatusCode,
-		ContentType: result.Header.Get("Content-Type"),
-		Headers:     result.Header,
-		Body:        base64.StdEncoding.EncodeToString(recorder.Body.Bytes()),
-	}
 }
 
 func envelopeManagement(result any, err error) []byte {

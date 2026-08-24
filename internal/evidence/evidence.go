@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/core"
-	"antigravity-priority/internal/priority"
-	"antigravity-priority/internal/provider/antigravity"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/priority"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/provider/antigravity"
 )
 
 // ObservationKind describes the diagnostic truth of an observation without

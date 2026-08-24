@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-priority/internal/apply"
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/host"
-	"antigravity-priority/internal/state"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/apply"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/state"
 )
 
 // StatusInfo represents summary state for UI rendering and status inspection.

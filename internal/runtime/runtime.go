@@ -9,14 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-priority/internal/apply"
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/core"
-	"antigravity-priority/internal/evidence"
-	"antigravity-priority/internal/host"
-	"antigravity-priority/internal/management"
-	"antigravity-priority/internal/priority"
-	"antigravity-priority/internal/state"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/apply"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/evidence"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/management"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/state"
 )
 
 const maxRunHistory = 10
@@ -29,11 +27,11 @@ type quotaPreview struct {
 	EvidenceByGroup map[config.AntigravityModelGroup]evidence.Result
 }
 
-// Runtime manages plugin lifecycle, configuration, ticker worker, and single-flight execution.
+// Runtime manages plugin lifecycle, configuration, quota probing, and single-flight execution.
 type Runtime struct {
 	mu                 sync.Mutex
 	runMu              sync.Mutex
-	tickerFactory      TickerFactory
+	configUpdateMu     sync.Mutex
 	runner             TaskRunner
 	rootCtx            context.Context
 	cancel             context.CancelFunc
@@ -48,18 +46,16 @@ type Runtime struct {
 	latestQuotaPreview *quotaPreview
 	scheduleConfig     state.ScheduleConfig
 	stateCacheOverride string
+	guardStateOverride string
 	runHistory         []RunHistoryEntry
-	lastAutoApplyAt    time.Time
-	worker             *tickerWorker
+	guardRuntime       *guardRuntimeState
+	hostFeatures       map[string]struct{}
+	schedulerPickHook  func(string)
 	shutdown           bool
 }
 
 // New creates an initialized Runtime instance.
 func New(options Options) *Runtime {
-	factory := options.TickerFactory
-	if factory == nil {
-		factory = timeTickerFactory{}
-	}
 	clock := options.Clock
 	if clock == nil {
 		clock = realRuntimeClock{}
@@ -70,7 +66,6 @@ func New(options Options) *Runtime {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	rt := &Runtime{
-		tickerFactory: factory,
 		rootCtx:       ctx,
 		cancel:        cancel,
 		cfg:           config.Default(),
@@ -82,12 +77,17 @@ func New(options Options) *Runtime {
 		rt.cfg.StateCachePath = options.StateCachePath
 		rt.stateCacheOverride = options.StateCachePath
 	}
+	if strings.TrimSpace(options.GuardStatePath) != "" {
+		rt.cfg.Guard.StatePath = options.GuardStatePath
+		rt.guardStateOverride = options.GuardStatePath
+	}
 	if options.Runner != nil {
 		rt.runner = options.Runner
 	} else {
 		rt.runner = rt.runProductionTask
 	}
 	rt.management = management.NewHandler(managementRunner{runtime: rt})
+	rt.guardRuntime = newGuardRuntimeState()
 
 	// Restore persisted cache, learned rates, and execution snapshot from disk on startup
 	cachePath := rt.cfg.StateCachePath
@@ -145,11 +145,17 @@ func (r *Runtime) Handle(ctx context.Context, method string, request []byte) []b
 	case MethodPluginShutdown:
 		return envelopeStatus(r.Shutdown(ctx))
 	case MethodManagementRegister:
-		return r.registerManagement()
+		return r.registerGuardManagement(request)
 	case MethodManagementHandle:
-		return r.handleManagement(ctx, request)
-	case MethodFilterResponse, MethodFilterComplete, MethodFilterError, MethodFilterOutbound, MethodFilterInbound:
-		return r.handleFilterEvent(ctx, request)
+		return r.handleGuardManagement(ctx, request)
+	case MethodSchedulerPick:
+		return r.handleSchedulerPick(ctx, request)
+	case MethodUsageHandle:
+		return r.handleUsage(ctx, request)
+	case MethodRequestBefore:
+		return r.handleRequestBefore(ctx, request)
+	case MethodRequestAfter:
+		return r.handleRequestAfter(ctx, request)
 	default:
 		return failure(fmt.Errorf("%w: method %q", ErrInvalidRequest, method))
 	}
@@ -157,29 +163,56 @@ func (r *Runtime) Handle(ctx context.Context, method string, request []byte) []b
 
 // Register initializes the plugin with configuration received from CPA and starts scheduled workers.
 func (r *Runtime) Register(ctx context.Context, req RegisterRequest) (RegisterResult, error) {
+	r.configUpdateMu.Lock()
+	defer r.configUpdateMu.Unlock()
+
 	cfg, _, err := config.LoadBytes([]byte(req.ConfigYAML))
 	if err != nil {
 		return RegisterResult{}, fmt.Errorf("load register config: %w", err)
 	}
 	cfg = r.applyStateCacheOverride(cfg)
+	cfg = r.applyGuardStateOverride(cfg)
 	cfg = r.mergePersistedDynamicConfig(cfg)
-	if err := r.replaceConfig(ctx, cfg); err != nil {
+	features := normalizedHostFeatures(req.HostFeatures)
+	r.guardRuntime.access.Lock()
+	defer r.guardRuntime.access.Unlock()
+	preparedGuard, err := r.prepareGuard(ctx, cfg, features, false)
+	if err != nil {
+		return RegisterResult{}, fmt.Errorf("configure quota guard: %w", err)
+	}
+	if err := r.replaceConfig(ctx, cfg, features); err != nil {
 		return RegisterResult{}, err
 	}
+	r.installPreparedGuard(preparedGuard, cfg.Guard)
 	return registrationResult(), nil
 }
 
 // Reconfigure updates runtime configuration dynamically and adjusts scheduled workers.
 func (r *Runtime) Reconfigure(ctx context.Context, req ReconfigureRequest) (RegisterResult, error) {
+	r.configUpdateMu.Lock()
+	defer r.configUpdateMu.Unlock()
+
 	cfg, _, err := config.LoadBytes([]byte(req.ConfigYAML))
 	if err != nil {
 		return RegisterResult{}, fmt.Errorf("load reconfigure config: %w", err)
 	}
 	cfg = r.applyStateCacheOverride(cfg)
+	cfg = r.applyGuardStateOverride(cfg)
 	cfg = r.mergePersistedDynamicConfig(cfg)
-	if err := r.replaceConfig(ctx, cfg); err != nil {
+	features := normalizedHostFeatures(req.HostFeatures)
+	r.guardRuntime.access.Lock()
+	defer r.guardRuntime.access.Unlock()
+	if err := r.guardRuntime.persist(); err != nil {
+		return RegisterResult{}, fmt.Errorf("persist active quota guard before host reconfigure: %w", err)
+	}
+	preparedGuard, err := r.prepareGuard(ctx, cfg, features, false)
+	if err != nil {
+		return RegisterResult{}, fmt.Errorf("configure quota guard: %w", err)
+	}
+	if err := r.replaceConfig(ctx, cfg, features); err != nil {
 		return RegisterResult{}, err
 	}
+	r.installPreparedGuard(preparedGuard, cfg.Guard)
 	return registrationResult(), nil
 }
 
@@ -193,19 +226,25 @@ func (r *Runtime) applyStateCacheOverride(cfg config.Config) config.Config {
 	return cfg
 }
 
-// ManualApply triggers an immediate priority calculation and host write-back.
-func (r *Runtime) ManualApply(ctx context.Context, modelGroup config.AntigravityModelGroup, authIndexes []string) error {
-	previewID := ""
-	if preview := r.currentQuotaPreview(); preview != nil {
-		previewID = preview.ID
+func (r *Runtime) applyGuardStateOverride(cfg config.Config) config.Config {
+	r.mu.Lock()
+	override := r.guardStateOverride
+	r.mu.Unlock()
+	if strings.TrimSpace(override) != "" {
+		cfg.Guard.StatePath = override
 	}
-	return r.runWithPreview(ctx, TriggerManualApply, modelGroup, authIndexes, previewID, true)
+	return cfg
 }
 
-// ManualApplyWithPreview commits the quota preview identified by previewID
-// without issuing another quota request.
+// ManualApply is retained as a compatibility stub. Quota Guard never writes
+// CPA auth priority or disabled fields.
+func (r *Runtime) ManualApply(ctx context.Context, modelGroup config.AntigravityModelGroup, authIndexes []string) error {
+	return ErrLegacyMutationDisabled
+}
+
+// ManualApplyWithPreview is retained as a compatibility stub.
 func (r *Runtime) ManualApplyWithPreview(ctx context.Context, modelGroup config.AntigravityModelGroup, authIndexes []string, previewID string) error {
-	return r.runWithPreview(ctx, TriggerManualApply, modelGroup, authIndexes, previewID, true)
+	return ErrLegacyMutationDisabled
 }
 
 // Probe triggers a probe-only execution: fetches fresh quota and updates the cache without planning or applying.
@@ -213,111 +252,9 @@ func (r *Runtime) Probe(ctx context.Context, modelGroup config.AntigravityModelG
 	return r.run(ctx, TriggerProbe, modelGroup, authIndexes)
 }
 
-// ResetAllPriorities removes the priority field from all Antigravity credentials in CPA host.
+// ResetAllPriorities is retained as a compatibility stub.
 func (r *Runtime) ResetAllPriorities(ctx context.Context) (map[string]any, error) {
-	if !r.runMu.TryLock() {
-		return nil, ErrRunInProgress
-	}
-	defer r.runMu.Unlock()
-
-	if r.hostCallbacks == nil {
-		return nil, errMissingHostCallbacks
-	}
-	r.mu.Lock()
-	cfg := r.cfg
-	r.mu.Unlock()
-	client := host.NewClient(r.hostCallbacks)
-	files, err := client.ListAuthFiles(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	credentials := credentialsFromAuthFiles(files)
-	intents := make([]apply.TransitionIntent, 0, len(credentials))
-	for _, credential := range credentials {
-		intents = append(intents, apply.ResetIntent(credential, "priority reset"))
-	}
-	transitionResult, err := apply.NewHostTransition(client).Execute(ctx, apply.TransitionRound{Intents: intents})
-	if err != nil {
-		return nil, err
-	}
-	result := apply.ResultFromTransition(transitionResult)
-	resetCount := transitionResult.Totals.Committed + transitionResult.Totals.NoChange
-
-	// Update credentials to reflect reset state (PriorityMissing = true, Priority = 0)
-	for i := range credentials {
-		credentials[i].Priority = 0
-		credentials[i].PriorityMissing = true
-	}
-	// Re-read the Host inventory after the transition so the projection uses
-	// the authoritative post-reset credential set.
-	files, err = client.ListAuthFiles(ctx)
-	if err != nil {
-		return nil, err
-	}
-	credentials = credentialsFromAuthFiles(files)
-	for i := range credentials {
-		credentials[i].Priority = 0
-		credentials[i].PriorityMissing = true
-	}
-	credentials, _, _ = enrichCredentialsFromAuthDocuments(ctx, client, credentials)
-
-	cachePath := cfg.StateCachePath
-	if strings.TrimSpace(cachePath) == "" {
-		cachePath = config.DefaultStateCachePath
-	}
-	store, err := state.Load(ctx, cachePath)
-	if err != nil {
-		return nil, err
-	}
-	evidenceByGroup := buildProjectionEvidence(store, credentials)
-	now := r.clock.Now().UTC()
-	projection, err := ProjectDualModelGroups(ProjectionInput{
-		ControlModelGroup: cfg.AntigravityModelGroup,
-		Credentials:       credentials,
-		EvidenceByGroup:   evidenceByGroup,
-		PlanningOptions:   priorityOptions(cfg, store, now),
-		ProjectionTime:    now,
-	})
-	if err != nil {
-		return nil, err
-	}
-	primarySnapshot := projection.ControlSnapshot
-	r.clearQuotaPreview()
-	r.setDualSnapshot(projection.Snapshot)
-
-	summary := resultSummary("reset", result)
-	result.Snapshot = primarySnapshot
-	snap := primarySnapshot
-	_, projectErr := r.projectRun(ctx, store, result, summary, RunHistoryEntry{
-		Kind:     KindReset,
-		Trigger:  string(TriggerManualApply),
-		Message:  summary,
-		Snapshot: &snap,
-	})
-	if projectErr != nil {
-		return map[string]any{
-			"ok":          false,
-			"message":     summary,
-			"reset_count": resetCount,
-			"attempted":   result.Attempted,
-			"succeeded":   result.Succeeded,
-			"failed":      result.Failed,
-			"conflicts":   result.Conflicts,
-			"uncertain":   result.Uncertain,
-		}, projectErr
-	}
-
-	return map[string]any{
-		"ok":          true,
-		"message":     summary,
-		"reset_count": resetCount,
-		"attempted":   result.Attempted,
-		"succeeded":   result.Succeeded,
-		"failed":      result.Failed,
-		"conflicts":   result.Conflicts,
-		"uncertain":   result.Uncertain,
-	}, nil
+	return nil, ErrLegacyMutationDisabled
 }
 
 // SyncHost re-reads credentials from CPA host, re-evaluates cached evidence, and updates the dual-group snapshot.
@@ -414,9 +351,9 @@ func (r *Runtime) GetProbeSamples(ctx context.Context, probeRoundID, modelGroup 
 	return store.GetSamplesByProbeRound(probeRoundID, modelGroup), nil
 }
 
-// AutoApply executes a background scheduled run respecting interval cooldown.
+// AutoApply is retained as a compatibility stub.
 func (r *Runtime) AutoApply(ctx context.Context) error {
-	return r.runAuto(ctx)
+	return ErrLegacyMutationDisabled
 }
 
 func (r *Runtime) run(ctx context.Context, trigger Trigger, modelGroup config.AntigravityModelGroup, authIndexes []string) error {
@@ -449,84 +386,6 @@ func (r *Runtime) runWithPreview(ctx context.Context, trigger Trigger, modelGrou
 		return fmt.Errorf("run %s: %w", trigger, err)
 	}
 	return nil
-}
-
-func (r *Runtime) runAuto(ctx context.Context) error {
-	if !r.runMu.TryLock() {
-		return ErrRunInProgress
-	}
-	defer r.runMu.Unlock()
-
-	r.mu.Lock()
-	cfg := r.cfg
-	sched := r.scheduleConfig
-	r.mu.Unlock()
-
-	// Guard: skip if plugin is disabled or scheduler is paused
-	if !cfg.Enabled || sched.Paused {
-		return nil
-	}
-
-	taskCtx, cleanup, cfg, runner, err := r.taskContext(ctx)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-
-	// Schedule window values are user-facing local wall-clock times. Keep the
-	// clock's location here so the backend evaluates the same local time shown
-	// by the management UI; persisted timestamps remain UTC elsewhere.
-	now := r.clock.Now()
-
-	if !state.IsInScheduleWindow(now, sched) {
-		return nil
-	}
-
-	r.mu.Lock()
-	last := r.lastAutoApplyAt
-	interval := cfg.Interval
-	if interval > 0 && !last.IsZero() && now.Sub(last) < interval {
-		r.mu.Unlock()
-		return nil
-	}
-	r.mu.Unlock()
-
-	runErr := runner(taskCtx, TaskRequest{
-		Config:  cfg,
-		Trigger: TriggerAutoApply,
-	})
-	if runErr != nil {
-		if !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) {
-			r.snapshotRunEntry(apply.Result{}, runErr.Error(), RunHistoryEntry{
-				Kind:    KindAutoApply,
-				Trigger: string(TriggerAutoApply),
-				Message: "auto_apply error: " + runErr.Error(),
-			})
-		}
-		return fmt.Errorf("run %s: %w", TriggerAutoApply, runErr)
-	}
-
-	r.mu.Lock()
-	r.lastAutoApplyAt = r.clock.Now().UTC()
-	r.mu.Unlock()
-	return nil
-}
-
-func (r *Runtime) nextAutoApplyWait(interval time.Duration) time.Duration {
-	if interval <= 0 {
-		interval = 15 * time.Minute
-	}
-	r.mu.Lock()
-	last := r.lastAutoApplyAt
-	r.mu.Unlock()
-	if last.IsZero() {
-		return time.Second
-	}
-	remaining := interval - r.clock.Now().UTC().Sub(last)
-	if remaining < time.Second {
-		return time.Second
-	}
-	return remaining
 }
 
 // Config returns the current configuration snapshot.
@@ -592,12 +451,8 @@ func (r *Runtime) Diagnostics(ctx context.Context) (map[string]any, error) {
 	}
 	result, audit := r.currentRunSnapshot()
 	r.mu.Lock()
-	lastAuto := r.lastAutoApplyAt
-	workerActive := r.worker != nil
 	sched := r.scheduleConfig
 	r.mu.Unlock()
-	nextWait := r.nextAutoApplyWait(cfg.Interval)
-	nextRunAt := r.clock.Now().UTC().Add(nextWait)
 
 	activeCooldowns := make([]map[string]any, 0)
 	cachePath := cfg.StateCachePath
@@ -622,19 +477,17 @@ func (r *Runtime) Diagnostics(ctx context.Context) (map[string]any, error) {
 	return map[string]any{
 		"management_api": map[string]any{
 			"status":     "ready",
-			"auto_apply": cfg.AutoApply,
+			"auto_apply": false,
 			"enabled":    cfg.Enabled,
 		},
 		"scheduler": map[string]any{
-			"interval":           cfg.Interval.String(),
-			"last_auto_apply_at": lastAuto,
-			"next_wait":          nextWait.String(),
-			"next_run_at":        nextRunAt.Format(time.RFC3339),
-			"worker_active":      workerActive,
-			"paused":             sched.Paused,
-			"window_enabled":     sched.WindowEnabled,
-			"window_start":       sched.WindowStart,
-			"window_end":         sched.WindowEnd,
+			"legacy_auto_apply": false,
+			"probe_interval":    cfg.Guard.ProbeInterval.String(),
+			"worker_active":     r.guardRuntime != nil,
+			"paused":            sched.Paused,
+			"window_enabled":    sched.WindowEnabled,
+			"window_start":      sched.WindowStart,
+			"window_end":        sched.WindowEnd,
 		},
 		"active_cooldowns": activeCooldowns,
 		"latest_audit":     audit,
@@ -646,6 +499,9 @@ func (r *Runtime) Diagnostics(ctx context.Context) (map[string]any, error) {
 
 // Shutdown terminates runtime workers and marks runtime as shutdown.
 func (r *Runtime) Shutdown(ctx context.Context) error {
+	r.configUpdateMu.Lock()
+	defer r.configUpdateMu.Unlock()
+
 	r.mu.Lock()
 	if r.shutdown {
 		r.mu.Unlock()
@@ -653,13 +509,12 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	}
 	r.shutdown = true
 	r.cancel()
-	worker := r.worker
-	r.worker = nil
+	guardRuntime := r.guardRuntime
 	r.mu.Unlock()
-	return stopWorker(ctx, worker)
+	return guardRuntime.stop(ctx)
 }
 
-func (r *Runtime) replaceConfig(ctx context.Context, cfg config.Config) error {
+func (r *Runtime) replaceConfig(ctx context.Context, cfg config.Config, hostFeatures map[string]struct{}) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("runtime configure context: %w", err)
 	}
@@ -669,44 +524,34 @@ func (r *Runtime) replaceConfig(ctx context.Context, cfg config.Config) error {
 		r.mu.Unlock()
 		return ErrShutdown
 	}
-	oldCfg := r.cfg
-	oldWorker := r.worker
-	needRestartWorker := oldWorker == nil ||
-		oldCfg.Enabled != cfg.Enabled ||
-		oldCfg.AutoApply != cfg.AutoApply ||
-		oldCfg.Interval != cfg.Interval
 	r.cfg = cfg
+	r.hostFeatures = cloneFeatureSet(hostFeatures)
 	r.mu.Unlock()
-
-	if !needRestartWorker {
-		return nil
-	}
-
-	worker := r.newWorker(cfg)
-	r.mu.Lock()
-	if r.shutdown {
-		r.mu.Unlock()
-		return stopNewWorker(worker, ErrShutdown)
-	}
-	oldWorker = r.worker
-	r.worker = worker
-	r.mu.Unlock()
-
-	if worker != nil {
-		worker.start(r.rootCtx, r)
-	}
-	return stopWorker(ctx, oldWorker)
+	return nil
 }
 
-func (r *Runtime) newWorker(cfg config.Config) *tickerWorker {
-	if !cfg.Enabled || !cfg.AutoApply {
-		return nil
+func normalizedHostFeatures(values []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value = strings.ToLower(strings.TrimSpace(value)); value != "" {
+			out[value] = struct{}{}
+		}
 	}
-	return &tickerWorker{
-		interval: cfg.Interval,
-		ticker:   r.tickerFactory.NewTicker(cfg.Interval),
-		done:     make(chan struct{}),
+	return out
+}
+
+func cloneFeatureSet(values map[string]struct{}) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for value := range values {
+		out[value] = struct{}{}
 	}
+	return out
+}
+
+func (r *Runtime) currentHostFeatures() map[string]struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return cloneFeatureSet(r.hostFeatures)
 }
 
 func (r *Runtime) taskContext(ctx context.Context) (context.Context, func(), config.Config, TaskRunner, error) {
@@ -796,12 +641,6 @@ func (r *Runtime) currentQuotaPreview() *quotaPreview {
 	return &cloned
 }
 
-func (r *Runtime) clearQuotaPreview() {
-	r.mu.Lock()
-	r.latestQuotaPreview = nil
-	r.mu.Unlock()
-}
-
 func cloneQuotaPreview(preview quotaPreview) quotaPreview {
 	cloned := preview
 	cloned.EvidenceByGroup = make(map[config.AntigravityModelGroup]evidence.Result, len(preview.EvidenceByGroup))
@@ -863,7 +702,14 @@ func (r *Runtime) GetDynamicConfig(ctx context.Context) (config.DynamicConfig, e
 	store, err := state.Load(ctx, cachePath)
 	if err == nil {
 		if dyn, ok := store.GetDynamicConfig(); ok {
-			return dyn, nil
+			// Never expose a persisted legacy document that the current runtime
+			// would reject (notably auto_apply=true). Return its canonical,
+			// validated form or fall back to the active in-memory configuration.
+			if merged, applyErr := dyn.ApplyTo(cfg); applyErr == nil {
+				canonical := merged.Dynamic()
+				canonical.Schedule = sched
+				return canonical, nil
+			}
 		}
 	}
 
@@ -874,14 +720,38 @@ func (r *Runtime) GetDynamicConfig(ctx context.Context) (config.DynamicConfig, e
 
 // SetDynamicConfig validates, persists, and hot-applies new dynamic configuration without restarting.
 func (r *Runtime) SetDynamicConfig(ctx context.Context, dyn config.DynamicConfig) error {
+	r.configUpdateMu.Lock()
+	defer r.configUpdateMu.Unlock()
+
 	r.mu.Lock()
 	baseCfg := r.cfg
 	cachePath := r.cfg.StateCachePath
+	if r.shutdown {
+		r.mu.Unlock()
+		return ErrShutdown
+	}
 	r.mu.Unlock()
 
 	newCfg, err := dyn.ApplyTo(baseCfg)
 	if err != nil {
 		return err
+	}
+	// Exclude scheduler, usage, probe evidence, roster, and management mutations
+	// across the final flush/load/swap transaction. Otherwise an event accepted
+	// after the flush could land in the retiring generation and be lost.
+	r.guardRuntime.access.Lock()
+	defer r.guardRuntime.access.Unlock()
+
+	// Flush any dirty breaker state before loading the prepared generation so a
+	// configuration-only update cannot regress to an older on-disk snapshot.
+	if r.guardRuntime != nil {
+		if err := r.guardRuntime.persist(); err != nil {
+			return fmt.Errorf("persist active quota guard before reconfigure: %w", err)
+		}
+	}
+	preparedGuard, err := r.prepareGuard(ctx, newCfg, r.currentHostFeatures(), true)
+	if err != nil {
+		return fmt.Errorf("configure quota guard: %w", err)
 	}
 
 	if strings.TrimSpace(cachePath) == "" {
@@ -892,17 +762,24 @@ func (r *Runtime) SetDynamicConfig(ctx context.Context, dyn config.DynamicConfig
 	if err != nil {
 		return fmt.Errorf("load state for save: %w", err)
 	}
-	store.SetDynamicConfig(dyn)
-	store.SetScheduleConfig(dyn.Schedule)
+	// Persist the canonical validated document before changing any active
+	// runtime state. From this point onward the in-memory commit path is
+	// deliberately non-cancellable and has no expected validation or IO errors.
+	persisted := newCfg.Dynamic()
+	store.SetDynamicConfig(persisted)
+	store.SetScheduleConfig(persisted.Schedule)
 	if err := store.SaveAtomic(ctx); err != nil {
 		return fmt.Errorf("save dynamic config: %w", err)
 	}
 
+	// All remaining steps are in-memory, non-fallible commits. Shutdown and
+	// competing configuration updates are excluded by configUpdateMu.
+	r.installPreparedGuard(preparedGuard, newCfg.Guard)
 	r.mu.Lock()
-	r.scheduleConfig = dyn.Schedule
+	r.cfg = newCfg
+	r.scheduleConfig = persisted.Schedule
 	r.mu.Unlock()
-
-	return r.replaceConfig(ctx, newCfg)
+	return nil
 }
 
 func (r *Runtime) mergePersistedDynamicConfig(baseCfg config.Config) config.Config {
@@ -953,177 +830,15 @@ func (r *Runtime) latestApplyEntry() *RunHistoryEntry {
 
 func registrationResult() RegisterResult {
 	return RegisterResult{
-		SchemaVersion: 1,
+		SchemaVersion: 3,
 		Metadata:      buildMetadata(),
 		Capabilities: map[string]bool{
-			"management_api":     true,
-			"management":         true,
-			MethodFilterResponse: true,
-			MethodFilterComplete: true,
-			MethodFilterError:    true,
+			"management_api":      true,
+			"scheduler":           true,
+			"usage_plugin":        true,
+			"request_interceptor": true,
 		},
 	}
-}
-
-func (r *Runtime) handleFilterEvent(ctx context.Context, raw []byte) []byte {
-	var payload struct {
-		AuthIndex  string `json:"auth_index"`
-		AuthName   string `json:"auth_name"`
-		StatusCode int    `json:"status_code"`
-		Error      string `json:"error"`
-		ModelGroup string `json:"model_group"`
-	}
-	_ = json.Unmarshal(raw, &payload)
-	authIndex := firstNonEmpty(payload.AuthIndex, payload.AuthName)
-	if authIndex == "" {
-		return mustMarshal(Envelope{OK: true})
-	}
-
-	is429 := payload.StatusCode == 429 || strings.Contains(strings.ToLower(payload.Error), "429") ||
-		strings.Contains(strings.ToUpper(payload.Error), "RESOURCE_EXHAUSTED") ||
-		strings.Contains(strings.ToUpper(payload.Error), "RATE_LIMIT")
-
-	if is429 {
-		r.runMu.Lock()
-		err := r.triggerCooldown(ctx, authIndex, payload.ModelGroup, "429 rate limit detected")
-		r.runMu.Unlock()
-		if err != nil {
-			return failure(err)
-		}
-	}
-
-	return mustMarshal(Envelope{OK: true})
-}
-
-func (r *Runtime) triggerCooldown(ctx context.Context, authIndex, modelGroup, reason string) error {
-	now := r.clock.Now().UTC()
-	cfg, err := r.Config()
-	if err != nil {
-		return err
-	}
-	cachePath := cfg.StateCachePath
-	if strings.TrimSpace(cachePath) == "" {
-		cachePath = config.DefaultStateCachePath
-	}
-	store, err := state.Load(ctx, cachePath)
-	if err != nil {
-		r.recordCooldownFailure(ctx, nil, authIndex, reason, err)
-		return fmt.Errorf("record cooldown state: %w", err)
-	}
-
-	cooldownMinutes := cfg.RateLimitCooldownMinutes
-	if cooldownMinutes <= 0 {
-		cooldownMinutes = config.DefaultRateLimitCooldownMinutes
-	}
-	cooldownUntil := now.Add(time.Duration(cooldownMinutes) * time.Minute)
-
-	store.SetCooldown(state.CooldownEntry{
-		AuthIndex:     authIndex,
-		ModelGroup:    modelGroup,
-		TriggeredAt:   now,
-		CooldownUntil: cooldownUntil,
-		Reason:        reason,
-	})
-	if err := store.SaveAtomic(ctx); err != nil {
-		r.recordCooldownFailure(ctx, store, authIndex, reason, err)
-		return fmt.Errorf("persist cooldown state: %w", err)
-	}
-	if r.hostCallbacks == nil {
-		err := errMissingHostCallbacks
-		r.recordCooldownFailure(ctx, store, authIndex, reason, err)
-		return err
-	}
-
-	client := host.NewClient(r.hostCallbacks)
-	credential := core.Credential{
-		Name:      authIndex,
-		AuthIndex: authIndex,
-		Provider:  core.ProviderAntigravity,
-		Type:      core.CredentialTypeAntigravity,
-	}
-	files, listErr := client.ListAuthFiles(ctx)
-	if listErr != nil {
-		r.recordCooldownFailure(ctx, store, authIndex, reason, listErr)
-		return fmt.Errorf("synchronize cooldown credential: %w", listErr)
-	}
-	found := false
-	for _, candidate := range credentialsFromAuthFiles(files) {
-		if candidate.AuthIndex == authIndex || candidate.Name == authIndex {
-			credential = candidate
-			found = true
-			break
-		}
-	}
-	if !found {
-		err := errors.New("cooldown credential not found in Host inventory")
-		r.recordCooldownFailure(ctx, store, authIndex, reason, err)
-		return err
-	}
-	if enriched, _, enrichErr := enrichCredentialsFromAuthDocuments(ctx, client, []core.Credential{credential}); enrichErr != nil {
-		r.recordCooldownFailure(ctx, store, authIndex, reason, enrichErr)
-		return fmt.Errorf("synchronize cooldown Host state: %w", enrichErr)
-	} else if len(enriched) == 1 {
-		credential = enriched[0]
-	}
-	transition := apply.NewHostTransition(client)
-	result, applyErr := apply.ExecuteRound(ctx, transition, apply.TransitionRound{
-		Intents: []apply.TransitionIntent{apply.CooldownIntent(credential, reason)},
-	})
-	result.Snapshot = apply.Snapshot(priority.Plan{
-		DecidedAt: now,
-		Items: []priority.PlanItem{{
-			Credential: credential,
-			Priority:   priority.DepletedPriority,
-			Disabled:   false,
-			Reason:     priority.Reason429Cooldown,
-		}},
-	})
-	if applyErr != nil {
-		r.recordCooldownFailure(ctx, store, authIndex, reason, applyErr)
-		return applyErr
-	}
-	summary := resultSummary("429 cooldown", result)
-	_, projectErr := r.projectRun(ctx, store, result, summary, RunHistoryEntry{
-		Kind:     KindCooldown,
-		Trigger:  "filter_429",
-		Message:  summary,
-		Snapshot: &result.Snapshot,
-	})
-	if projectErr != nil {
-		return projectErr
-	}
-	if result.Transitions.Totals.Failed > 0 || result.Transitions.Totals.Conflicts > 0 || result.Transitions.Totals.Uncertain > 0 {
-		return errors.New("429 cooldown host mutation failed")
-	}
-	return nil
-}
-
-func (r *Runtime) recordCooldownFailure(ctx context.Context, store *state.Store, authIndex, reason string, err error) {
-	message := reason + ": " + host.RedactBytes([]byte(err.Error()))
-	result := apply.ResultFromTransition(apply.TransitionRoundResult{Details: []apply.TransitionResult{{
-		AuthIndex: redactRuntimeIdentifier(authIndex),
-		Outcome:   apply.OutcomeFailed,
-		Reason:    apply.ReasonCommitFailed,
-		Cause:     reason,
-		Error:     host.RedactBytes([]byte(err.Error())),
-	}}})
-	entry := RunHistoryEntry{
-		Kind:      KindCooldown,
-		Trigger:   "filter_429",
-		Attempted: result.Attempted,
-		Succeeded: result.Succeeded,
-		Failed:    result.Failed,
-		Skipped:   result.Skipped,
-		NoChange:  result.NoChange,
-		Conflicts: result.Conflicts,
-		Uncertain: result.Uncertain,
-		Message:   message,
-	}
-	if store == nil {
-		r.snapshotRunEntry(result, message, entry)
-		return
-	}
-	_, _ = r.projectRun(ctx, store, result, message, entry)
 }
 
 func redactRuntimeIdentifier(value string) string {
@@ -1135,11 +850,11 @@ func redactRuntimeIdentifier(value string) string {
 
 func buildMetadata() Metadata {
 	return Metadata{
-		Name:             "Antigravity Priority",
-		Version:          "1.2.9",
-		Author:           "ygq-future",
-		GitHubRepository: "https://github.com/ygq-future/antigravity-priority",
-		Description:      "Intelligent quota pacing and adaptive burn-rate priority scheduler exclusively for Google Antigravity in CLIProxyAPI.",
+		Name:             "CPA Antigravity Quota Guard",
+		Version:          "0.1.1",
+		Author:           "zyaireleo",
+		GitHubRepository: "https://github.com/zyaireleo/cpa-antigravity-quota-guard",
+		Description:      "Per-account, per-model-group quota circuit breaker for Google Antigravity credentials in CLIProxyAPI.",
 	}
 }
 

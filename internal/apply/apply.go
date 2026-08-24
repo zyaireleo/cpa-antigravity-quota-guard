@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"antigravity-priority/internal/priority"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/priority"
 )
 
 // ChangeStatus represents the execution status of an individual planned change.

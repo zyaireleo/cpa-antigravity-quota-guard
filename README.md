@@ -1,189 +1,171 @@
-<div align="center">
+# CPA Antigravity Quota Guard
 
-# Antigravity Smart Priority (`antigravity-priority`)
+`cpa-antigravity-quota-guard` 是面向 [CLIProxyAPI（CPA）](https://github.com/router-for-me/CLIProxyAPI) 的 Google Antigravity 配额熔断插件。它基于 CPA 官方插件 ABI，按 **账号 × 模型组** 维护配额状态，在账号额度耗尽或持续收到 429 时停止选择该账号，而不是修改 auth JSON 的 `priority` 或 `disabled`。
 
-[中文](./README.md) | [English](./README.en.md)
+当前开发基线：
 
-</div>
+- 上游插件基线：`ygq-future/antigravity-priority` `v1.2.9` / `373f44b430c5eb770fb63657da9a7983c5cdabff`
+- CPA ABI 基线：CLIProxyAPI `v7.2.141` / `dc3c3b1ec3ed04bb0917e76451eaf98c6842674d`
+- 当前版本：`0.1.1`
 
-CLIProxyAPI (CPA) 专精型 **Google Antigravity 凭证智能配额调度与自适应提权插件**。插件 ID、动态库基础名与 CPA 配置键均为 `antigravity-priority`。
+> 默认运行在 `observe`。stock CLIProxyAPI `v7.2.141` 只支持 `observe`；`enforce` 必须配套本项目的 CLIProxyAPI Core 增强，并通过 host feature 协商与 `required-scheduler-for` 闸门。
 
----
+## 核心行为
 
-## 导航
+- 模型组独立：`gemini` 与 `claude_gpt` 互不影响。
+- 状态机：`uninitialized → closed → open → half_open`。
+- quota 证据为 0 且 reset 可信：立即打开 breaker，恢复时间使用 reset。
+- 明确额度耗尽 429：立即打开 breaker。
+- generic 429：60 秒内连续 2 次后冷却 15 分钟，再次失败最多提升到 30 分钟。
+- reset 到达后只允许一个 half-open 请求；成功关闭 transient breaker，失败重新打开。
+- quota probe 失败仅标记证据过期并计数，不改变调度状态。
+- 未知账号和未知模型默认 fail-closed。
+- mixed provider 路由会排除冷却中的 Antigravity，同时保留其他 Provider 候选。
+- 人工 `disabled=true` 始终由 CPA 原生候选过滤负责，插件不会写回或重新启用账号。
 
-- [功能概览](#功能概览)
-- [工作流程](#工作流程)
-- [构建与安装](#构建与安装)
-- [插件商店来源](#插件商店来源)
-- [配置说明](#配置说明)
-- [管理页面与接口](#管理页面与接口)
-- [许可证](#许可证)
+## 官方 ABI 能力
 
----
-
-## 功能概览
-
-- **Antigravity 专精双窗口调度**：专为 Google Antigravity 体系（支持 `gemini` 与 `claude_gpt` 配额模型组）深度定制，精准联动 5 小时短窗与 7 天周长窗配额。
-- **同分平级分档与负载均衡**：相近紧迫度账号自动分配相同优先级整数，由 CPA 原生轮询分流，彻底杜绝单点打穿 429。
-- **429 实时识别与熔断冷却**：自动捕获业务调用与探针 429 错误，立即将账号优先级降级至 `-1` 兜底队列，冷却期满后自动自愈恢复。
-- **动态提前提权（Dynamic Boost Horizon）**：根据账号剩余周额度与物理消耗速率，自动在最佳时间窗口触发 `999, 998...` 梯次提权，彻底解决大额度账号到期撑死溢出的痛点。
-- **周紧迫度平滑轮转（Weekly Urgency）**：实时量化单位时间消耗压力，使日常轮转中临近到期或高剩余的账号获得更优的基准优先级。
-- **自适应动态学习率（Adaptive $C_{\text{cycle}}$）**：基于连续探测增量自动推算每个账号真实的周期消耗能力并平滑收敛，无需用户手动猜测和配置复杂的数学系数。
-- **自愈式软降级与硬禁用**：5 小时短窗耗尽仅软降级优先级至 `-1`（重置后自动静默自愈），7 天周额度耗尽写入宿主硬禁用 `disabled = true`。
-- **UI 动态配置中心（免重启热生效）**：CPA 宿主 YAML 仅需保留 `enabled: true`，所有业务与调度参数统一在 Web UI **`⚙️ 配置中心`** 可视化调节并即时热生效。
-- **嵌入式双主题仪表盘**：零外部 CDN，严格 CSP 安全，完全自适应 CPA 宿主主题，提供配额监控、双组即时预测切换、完整 email 身份与变动 Diff 确认写回控制；令牌、密钥和持久化审计保持安全脱敏。
-
----
-
-## 工作流程
+插件只注册：
 
 ```text
-加载插件
-  -> 读取 plugins.configs.antigravity-priority 配置
-  -> 通过 host.auth.list 获取 CPA 凭证列表
-  -> 过滤 Antigravity 凭证
-       - 按所选模型组 (gemini 或 claude_gpt) 并发探测 5h 与 7d 双窗口剩余配额
-       - 提取短窗剩余比例 R_5h、短窗重置倒计时 T_5h、周额度剩余比例 R_7d、周重置倒计时 T_7d
-       - 结合自适应 C_cycle 学习率判定是否进入 Dynamic Boost 提权区间
-  -> 依据 3 级比较器构建排序计划
-       - Tier 1 (Boosted) : 提权区间 -> 分配 999, 998... (按周紧迫度降序)
-       - Tier 2 (Regular) : 常规健康 -> 分配 100, 99... (按周紧迫度降序，短窗重置时间平局决胜)
-       - Tier 3 (Depleted): 周耗尽 hard-disable > 短窗耗尽 soft-fallback (-1)
-  -> 根据运行模式执行
-       - apply：通过统一 Host Transition 对单个凭证执行一次完整文档替换并回读验证 (min_change 过滤微小变动)
-       - probe / sync：仅更新内存状态、诊断与管理快照
-  -> 在认证管理页面展示完整 CPA email、双窗口仪表、紧迫度评分、提权状态与脱敏审计摘要；authIndex 仅作为内部技术关联键
+scheduler
+usage_plugin
+request_interceptor
+management_api
 ```
 
----
+旧 `filter.*`、优先级写回、自动调度写回和 reset 接口均不注册；兼容方法会返回 `runtime: legacy auth mutation is disabled`。
 
-## 构建与安装
+## 构建
 
-插件以 CGO 动态库形式运行，宿主会从动态库文件名去掉扩展名得到插件 ID，因此文件名必须保持为 `antigravity-priority.<ext>`。
-
-### 本地编译
 ```bash
-# Linux / macOS
-go build -buildmode=c-shared -trimpath -ldflags="-s -w" -o antigravity-priority.so .
-
-# Windows (MSYS2 / MinGW)
-go build -buildmode=c-shared -trimpath -ldflags="-s -w" -o antigravity-priority.dll .
+go build -buildmode=c-shared -trimpath -ldflags="-s -w" \
+  -o cpa-antigravity-quota-guard.so .
+sha256sum cpa-antigravity-quota-guard.so
 ```
 
-### 部署到 CPA
-把产物放入 CPA 插件发现目录之一：
-- `plugins/<GOOS>/<GOARCH>/antigravity-priority.<ext>`
-- `plugins/<GOOS>/<GOARCH>-<variant>/antigravity-priority.<ext>`
-- `plugins/antigravity-priority.<ext>`
+CPA 根据动态库文件名识别插件，因此产物基础名必须是 `cpa-antigravity-quota-guard`。
 
-扩展名：Linux/FreeBSD 为 `.so`，macOS 为 `.dylib`，Windows 为 `.dll`。
+本仓库不信任第三方预编译文件，也不建议通过外部 `main/registry.json` 自动升级。生产版本应使用本仓库自建 Release 和 SHA-256 校验。
 
----
-
-## 插件商店来源
-
-如需通过 CPA 插件商店安装本插件，第三方来源必须指向 `registry.json` 的原始 JSON 文本：
+## 配置
 
 ```yaml
 plugins:
-  enabled: true
-  store-sources:
-    - "https://raw.githubusercontent.com/ygq-future/antigravity-priority/main/registry.json"
-```
-
-> **注意**：不要使用包含 `/blob/` 的 GitHub 网页地址。修改 `store-sources` 后，重启 CPA 或通过管理端重新加载配置，再刷新插件商店列表即可一键安装。
-
----
-
-## 配置说明
-
-### 1. CPA 宿主极简配置 (`config.yaml`)
-
-从 v1.1.0 起，推荐在 CPA `config.yaml` 中仅保留最干净的插件启用开关，所有业务参数均可在 Web 仪表盘的 **`⚙️ 配置中心`** 可视化调节：
-
-```yaml
-plugins:
-  enabled: true
-  dir: "plugins"
   configs:
-    antigravity-priority:
+    cpa-antigravity-quota-guard:
       enabled: true
-      # state_cache_path: "data/antigravity-priority-cache.json" # 可选，自定义持久化缓存路径
+      priority: -100
+      required-scheduler-for:
+        - antigravity
+      mode: observe
+      managed_auth: all_antigravity
+      enforced_groups:
+        - gemini
+        - claude_gpt
+      require_uniform_priority: true
+      probe_interval: 15m
+      evidence_max_age: 30m
+      generic_429:
+        threshold: 2
+        window: 60s
+        initial_cooldown: 15m
+        max_cooldown: 30m
+      half_open_lease: 30s
+      unknown_auth_policy: fail_closed
+      unknown_model_policy: fail_closed
+      state_cache_path: data/cpa-antigravity-quota-guard/quota-cache.json
+      state_path: data/cpa-antigravity-quota-guard/state.json
 ```
 
-| 宿主字段 | 默认值 | 必填 | 说明 |
-| :--- | :--- | :--- | :--- |
-| **`enabled`** | `true` | 是 | 插件全局启用开关。设为 `false` 时彻底停止调度与后台任务。 |
-| **`state_cache_path`** | `data/antigravity-priority-cache.json` | 否 | 插件状态快照、动态配置与时序自适应学习率的持久化存储文件路径。 |
+`auto_apply: true` 会被明确拒绝。插件不会修改 auth 文件的 `priority`、`disabled`、token 或其他字段。
 
-> **⚠️ 路径迁移提示**：插件不支持跨路径自动热迁移旧数据。若在运行中途更改了 `state_cache_path`，系统在新路径未找到文件时将默认作为全新冷启动。如需保留原有的动态配置、历史记录与自适应学习率，请在修改 YAML 前停止 CPA / 插件，手动将原缓存文件移动或复制至新路径。
+### `enforce` 上线闸门
 
-### 2. UI 动态配置中心 (免重启热生效)
+启用前必须全部满足：
 
-在管理面板的 **`⚙️ 配置中心`** 标签页中，可随时在线配置并立即热生效以下选项：
+1. 使用 CLIProxyAPI `v7.2.141` 基线上的 Core 增强版本，并由宿主声明全部 feature：
+   - `required_scheduler_v1`
+   - `scheduler_request_id_v1`
+   - `scheduler_direct_response_v1`
+   - `auth_inventory_ready_v1`
+2. 插件配置包含 `required-scheduler-for: [antigravity]`。宿主会将 Antigravity 路由精确交给本插件；本插件缺失、fuse、卸载、单插件或全局插件开关关闭、decline 或返回无效结果时，Antigravity 路由本地返回 503，不回退内建调度器。其他 Provider 的 Scheduler 可以同时启用。对于未配置 required Scheduler 的路由，CPA 仍只调用全局最高插件 priority 的 Scheduler，因此应让本插件 priority 低于 `codex-token-usage` 等其他 Provider Scheduler，例如本插件 `-100`、`codex-token-usage` 为 `0`。只有显式删除 marker 才解除保护。
+3. CPA Home 模式关闭。增强 Core 会在 Home 仍开启时对 Antigravity fail-closed，但这不是正常运行模式。
+4. 所有受管 Antigravity 账号 priority 一致。
+5. `gemini`、`claude_gpt` 均有 fresh baseline quota evidence。
+6. 状态文件可安全读写，且没有未知或身份冲突账号。
+7. `docs/phase0-abi-gate.md` 中的 Core 与插件集成门禁全部通过。
 
-| 配置项 | 默认值 | 范围/选项 | 说明 |
-| :--- | :--- | :--- | :--- |
-| **自动定时调度 (`auto_apply`)** | `false` | 开 / 关 | 是否由后台定时器周期性自动执行探测、规划并写回宿主凭证优先级。 |
-| **调度执行周期 (`interval`)** | `15m` | `5m`, `15m`, `30m`, `1h`, 自定义 | 自动探测与排序调度的运行周期。修改后立即重设定时器生效。 |
-| **配额主控模型组 (`antigravity_model_group`)** | `gemini` | `gemini` / `claude_gpt` | 配额主控模型组，以此组配额为依据决定写回宿主的优先级。 |
-| **生效时间区间 (`schedule_window`)** | `全天` | `HH:MM` 至 `HH:MM` | 每日生效时段（如 `09:00-23:00`，支持跨午夜如 `22:00-06:00`），非时段内自动休眠。 |
-| **最大探测并发数 (`max_concurrency`)** | `6` | `1 ~ 32` | 向 Google 配额接口发起并发探测的最大协程数。 |
-| **优先级变动写入阈值 (`min_change`)** | `1` | `0 ~ 100` | 优先级新旧变动绝对值达到该阈值才写入宿主，以减少磁盘 IO。 |
-| **紧迫度分档容差 (`urgency_tolerance`)** | `0.05` | `0.00 ~ 0.50` | 紧迫度差距在此容差内的账号分配相同优先级整数进行平级轮询。 |
-| **自适应时序样本容量 (`quota_sample_capacity`)** | `6` | `2 ~ 30` | FIFO 保留的历史探测样本数，同时用于消耗趋势查看与燃尽率学习。 |
-| **429 熔断冷却时长 (`rate_limit_cooldown_minutes`)** | `5` | `1 ~ 1440` 分钟 | 遭遇 429 限流时临时降级至 `-1` 兜底队列的冷却期，到期自动自愈。 |
-| **动态提权起始优先级 (`boost_start_priority`)** | `999` | `1 ~ 999` | 触发提权状态的第一梯队基准起始优先级。 |
-| **常规健康起始优先级 (`normal_start_priority`)** | `100` | `1 ~ 999`，且不高于 Boost 起始值 | 常规可用健康梯队的基准起始优先级。 |
+缺失 host feature、`required-scheduler-for` 或安全状态路径会直接拒绝 `enforce`。冷启动时，插件可在 CPA 初始 auth inventory 尚未完成或 baseline evidence 暂不可用时以 **armed-not-ready** 状态完成注册：Management API 保持可用，所有仅含 Antigravity 的受保护请求本地返回 503，且不会覆盖已有 breaker 状态。宿主发布 `inventory_ready=true` 并完成 roster reconcile 后，fresh baseline 满足即自动进入 `enforcement_ready=true`。通过 Management API 从 `observe` 切换到 `enforce` 仍要求全部闸门当场通过。
 
-> **持久化保障**：所有通过 UI 配置中心修改的选项会自动原子保存至当前持久化缓存文件（默认 `data/antigravity-priority-cache.json`），重启 CPA 容器数据不丢失，且优先级高于 YAML 初始值。
+已经建立 baseline 后，单次 probe 失败或 evidence 随时间变旧不会把健康账号整体停掉；原有 breaker 状态保持不变。新增或换号账号独立保持 `uninitialized` 并被排除，直到其首次成功 quota probe。
 
----
+## Management API
 
-## 管理页面与接口
+```text
+GET  /v0/management/cpa-antigravity-quota-guard/status
+GET  /v0/management/cpa-antigravity-quota-guard/config
+PUT  /v0/management/cpa-antigravity-quota-guard/config
+POST /v0/management/cpa-antigravity-quota-guard/actions/probe
+POST /v0/management/cpa-antigravity-quota-guard/actions/half-open
+GET  /v0/resource/plugins/cpa-antigravity-quota-guard/status
+```
 
-插件通过 `management.register` 分别向 CPA 宿主注册 **resources**（静态管理仪表盘）与 **routes**（动态管理 API）。
+Management Key 不接受 URL query，不写入 `localStorage` 或 `sessionStorage`；最小状态页只在页面内存中保存密钥。
 
-### 资源页面（静态 Web UI）
+## 状态与安全
 
-- `GET /v0/resource/plugins/antigravity-priority/status`
-  - **访问方式**：在 CPA 管理后台侧边栏点击 **"Antigravity Priority"** 菜单，或在浏览器中直接访问 `http://<CPA_HOST>:<PORT>/v0/resource/plugins/antigravity-priority/status`。
-  - **核心功能**：
-    - **概览与仪表盘**：5h/7d 双窗口配额进度条、自适应秒级倒计时、自适应消耗速率 $C_{\text{cycle}}$、周紧迫度得分与 🚀 提权状态；支持单行/双列网格切换与容器内独立滚动。
-    - **双模型组即时切换**：随时切换 Gemini 或 Claude/GPT 视图，非主控组智能标注 `🔮 预测优先级`。
-    - **两阶段控制**：提供 `📡 刷新配额 (10s冷却)`、`⚡ 立即写回 (带Diff确认)`、`🔄 重置默认`。
-    - **执行历史**：最近 10 次执行记录，支持点击 `🔍 查看明细` 弹窗查看 Apply 实际写回或 Probe 探测快照明细。
-    - **系统诊断**：调度引擎生命周期、时段状态、429 熔断与冷却监控看板、完整 email 身份、最近写入健康度与脱敏审计流，支持一键复制诊断 JSON。
-    - **⚙️ 配置中心**：在线修改所有调度与算法参数，0 秒热生效与一键恢复默认。
+- breaker 状态：`data/cpa-antigravity-quota-guard/state.json`
+- quota evidence/cache：`data/cpa-antigravity-quota-guard/quota-cache.json`
+- 状态文件权限：`0600`
+- 写入流程：临时文件、`fsync`、原子 rename、目录 `fsync`、回读验证
+- 相对状态路径拒绝绝对路径、`..`、目标 symlink 和父级 symlink
+- auth 内容只从 `host.auth.get` 返回的 `JSON` 读取；插件不会跟随 `AuthDocument.Path`
+- 状态和日志不保存 access token、refresh token、完整 auth JSON、请求体或完整错误体
 
-### 管理 API（动态接口，需 Management Key 鉴权）
+## CPA Core 兼容边界
 
-- `POST /v0/management/plugins/antigravity-priority/run?mode=probe`
-  - 触发一次向 Google API 的全量配额探测并更新本地缓存与快照，**不执行写回**。
-- `POST /v0/management/plugins/antigravity-priority/run?mode=apply`
-  - 触发全量探测计算，通过统一 Host Transition 将最新目标**一次性写回并校验 CPA 宿主**，返回脱敏执行结果。
-- `GET /v0/management/plugins/antigravity-priority/runtime-config`
-  - 获取当前完整运行时配置。
-- `POST /v0/management/plugins/antigravity-priority/runtime-config`
-  - 提交更新运行时配置并热生效。
-- `GET /v0/management/plugins/antigravity-priority/schedule/config`
-  - 获取自动调度时间区间与暂停状态。
-- `POST /v0/management/plugins/antigravity-priority/schedule/config`
-  - 动态切换自动调度暂停/恢复或更新生效时间区间。
-- `GET /v0/management/plugins/antigravity-priority/diagnostics`
-  - 导出调度器运行诊断数据、429 活跃熔断记录、后台 Ticker 状态、最近写入体征与近期执行记录；账号身份使用完整 email，令牌、密钥及持久化审计字段保持脱敏。
-- `POST /v0/management/plugins/antigravity-priority/sync`
-  - 主动从 CPA 宿主同步最新凭证文件列表并即时重新生成双组快照。
-- `GET /v0/management/plugins/antigravity-priority/samples?auth_index=xxx`
-  - 获取指定凭证在各模型组下的历史滑动窗口时序采样数据。
-- `GET /v0/management/plugins/antigravity-priority/samples?probe_round_id=xxx&model_group=gemini|claude_gpt`
-  - 获取指定探测轮次和模型组内实际新增的额度样本；额度未变化的凭证不会出现在结果中。
-- `GET /v0/management/plugins/antigravity-priority/snapshot/latest`
-  - 获取最近一次双模型组决策规划快照（`DualGroupSnapshot`）；响应保留完整 CPA email 和供 API 关联使用的技术 `auth_index`，管理页仅以 email 作为账号名称，敏感令牌与审计字段保持脱敏。
+CLIProxyAPI `v7.2.141` 中，`usage.handle` 是异步派发，因此插件不能单独保证在同一入站请求的下一次 credential retry 之前收到刚发生的 429；该场景仍依赖 CPA 原生 cooldown。
 
----
+长期 `enforce` 已确认需要 Core 增强：
 
-## 许可证
+- Scheduler/Usage 通过 `RequestID` 关联 half-open lease，避免旧请求关闭新 lease。
+- Scheduler rejection 可安全返回 HTTP 429、数字 `Retry-After` 和最大 64 KiB 的合法 JSON body。
+- `required-scheduler-for` 将 Antigravity 精确路由到本插件，并在其缺失、fuse、inactive、decline 或返回无效结果时本地 503，禁止静默回退；无关 Provider Scheduler 可同时保持 active。
+- `auth_inventory_ready_v1` 让插件区分“CPA 仍在冷启动加载 auth”与“已加载但 roster 为空”，避免早期空列表擦除持久化 cooldown。
+- required Scheduler 可用 `DelegateBuiltin=configured` 在 `observe` 或未启用的模型组中委托宿主当前 configured selector，保留原 routing strategy 和 cursor；宿主不会重新选中已由插件排除的账号。
+- Home 开启时同样 fail-closed。
 
-本项目使用 MIT License，详见 [LICENSE](./LICENSE)。
+stock Core 不提供这些保证，因此插件会拒绝在 stock Core 上进入 `enforce`；`observe` 仍兼容 stock `v7.2.141`。
+
+## 本地 Dev Server
+
+```bash
+go run ./cmd/devserver
+```
+
+打开：
+
+```text
+http://localhost:8080/v0/resource/plugins/cpa-antigravity-quota-guard/status
+```
+
+Dev Server 只模拟 auth inventory 和 quota endpoint；probe、状态页和 guard Management API 使用生产 Runtime。所有 legacy apply/auto-apply 操作均被禁用。
+
+默认仅监听 `127.0.0.1:8080`，启动时生成并打印独立 Dev Management Key。状态页可直接打开，调用 `/v0/management/` 接口时必须在页面输入该 key 或发送 Bearer header；非 loopback 监听必须显式传入 `-unsafe-listen`。
+
+## 验证
+
+```bash
+golangci-lint run --timeout=5m
+go build ./...
+go vet ./...
+go test -v ./...
+go test -race ./...
+```
+
+详细发布检查见 `docs/release-checklist.md`，Phase 0 ABI 闸门见 `docs/phase0-abi-gate.md`。
+
+## 上游与许可证
+
+本项目 fork 自 `ygq-future/antigravity-priority`，保留原项目 MIT 许可证与历史归属；当前 fork 由 `zyaireleo` 维护，架构目标已从 priority 写回转为只读配额熔断。

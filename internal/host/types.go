@@ -60,6 +60,7 @@ func (h Header) Get(key string) string {
 
 // AuthFile represents a minimal credential record returned by host.auth.list.
 type AuthFile struct {
+	ID              string          `json:"id,omitempty"`
 	Name            string          `json:"name"`
 	AuthIndex       string          `json:"auth_index"`
 	Type            string          `json:"type,omitempty"`
@@ -72,6 +73,15 @@ type AuthFile struct {
 	Account         string          `json:"account,omitempty"`
 	Email           string          `json:"email,omitempty"`
 	RawJSON         json.RawMessage `json:"-"`
+}
+
+// AuthInventory is the host's current non-secret credential roster plus an
+// explicit readiness bit. An empty roster before the host finishes its initial
+// auth load must not be confused with a fully loaded, intentionally empty
+// deployment.
+type AuthInventory struct {
+	Files []AuthFile `json:"files"`
+	Ready bool       `json:"inventory_ready"`
 }
 
 // UnmarshalJSON retains the raw JSON bytes while parsing the typed fields.
@@ -202,6 +212,12 @@ type HostCallbacks interface {
 	GetRuntime(ctx context.Context, authIndex string) (RuntimeAuth, error)
 	SaveAuth(ctx context.Context, name string, doc json.RawMessage) error
 	HTTPDo(ctx context.Context, req HTTPRequest) (HTTPResponse, error)
+}
+
+// AuthInventoryCallbacks is an optional extension implemented by hosts that
+// can distinguish bootstrap-time auth discovery from a completed inventory.
+type AuthInventoryCallbacks interface {
+	ListAuthInventory(ctx context.Context) (AuthInventory, error)
 }
 
 // API defines the stable host adapter interface.

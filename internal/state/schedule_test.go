@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-priority/internal/state"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/state"
 )
 
 func TestIsInScheduleWindow(t *testing.T) {

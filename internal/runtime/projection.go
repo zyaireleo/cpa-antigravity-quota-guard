@@ -5,11 +5,11 @@ import (
 	"strings"
 	"time"
 
-	"antigravity-priority/internal/apply"
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/core"
-	"antigravity-priority/internal/evidence"
-	"antigravity-priority/internal/priority"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/apply"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/evidence"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/priority"
 )
 
 // ProjectionInput contains the complete in-process input for one dual-group

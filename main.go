@@ -75,8 +75,8 @@ import (
 	"fmt"
 	"unsafe"
 
-	"antigravity-priority/internal/host"
-	pluginruntime "antigravity-priority/internal/runtime"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
+	pluginruntime "github.com/zyaireleo/cpa-antigravity-quota-guard/internal/runtime"
 )
 
 var cpaRuntime = pluginruntime.New(pluginruntime.Options{Host: hostCallbackAdapter{}})
@@ -155,13 +155,16 @@ func writeResponse(response *C.cliproxy_buffer, data []byte) C.int {
 type hostCallbackAdapter struct{}
 
 func (hostCallbackAdapter) ListAuthFiles(ctx context.Context) ([]host.AuthFile, error) {
-	var response struct {
-		Files []host.AuthFile `json:"files"`
-	}
+	inventory, err := (hostCallbackAdapter{}).ListAuthInventory(ctx)
+	return inventory.Files, err
+}
+
+func (hostCallbackAdapter) ListAuthInventory(ctx context.Context) (host.AuthInventory, error) {
+	var response host.AuthInventory
 	if err := callHost(ctx, host.MethodAuthList, map[string]any{}, &response); err != nil {
-		return nil, err
+		return host.AuthInventory{}, err
 	}
-	return response.Files, nil
+	return response, nil
 }
 
 func (hostCallbackAdapter) GetAuth(ctx context.Context, authIndex string) (host.AuthDocument, error) {
@@ -258,3 +261,4 @@ func copyHostResponse(response C.cliproxy_buffer) []byte {
 }
 
 var _ host.HostCallbacks = hostCallbackAdapter{}
+var _ host.AuthInventoryCallbacks = hostCallbackAdapter{}

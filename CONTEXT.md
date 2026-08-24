@@ -1,71 +1,44 @@
-# Antigravity Priority Plugin
+# CPA Antigravity Quota Guard Context
 
-An intelligent quota pacing, adaptive burn-rate estimation, and priority scheduler designed exclusively for Google Antigravity credentials within CLIProxyAPI (CPA).
+## Terms
 
-## Language
+**Credential / Auth identity**
+: CPA credential identified by `AuthID` and `AuthIndex`. Persisted breaker state is fenced by a non-secret identity fingerprint.
 
-### Quota Windows & Capacity
+**Model Group**
+: Independent Antigravity quota unit: `gemini` or `claude_gpt`.
 
-**Short Window (5h)**:
-The 5-hour rolling quota bucket allocated by Antigravity, representing short-term burst usage capacity.
-_Avoid_: Rate limit, minute window, short cache
+**Quota Evidence**
+: Successful quota probe result containing remaining percentage, observation time, and reset time. Probe errors are unknown evidence, not zero quota.
 
-**Long Window (7d / Weekly)**:
-The 7-day weekly total quota pool allocated by Antigravity for an account.
-_Avoid_: Monthly quota, account balance, total tokens
+**Breaker State**
+: `uninitialized`, `closed`, `open`, or `half_open` for one `(auth_index, model_group)` key.
 
-**Model Group**:
-The upstream independent quota计量 unit in Antigravity, either `gemini` (Gemini models) or `claude_gpt` (Claude and GPT models).
-_Avoid_: Provider, engine, model name
+**Quota-zero breaker**
+: Hard cooldown opened by trusted zero remaining quota with a future reset. It clears only after a fresh positive probe or a successful reset-time half-open request.
 
-**Control Model Group**:
-The configured Model Group whose Fresh Evidence may drive quota-based priority decisions and Host Transitions. Exactly one Model Group is the control authority at a time.
-_Avoid_: Active view, selected group, dashboard group
+**Explicit 429**
+: Upstream HTTP 429 whose sanitized error data clearly indicates quota exhaustion. Trusted reset metadata is preferred.
 
-**Predicted Model Group**:
-The non-control Model Group shown as a read-only projection of the priorities it would receive if configured as the Control Model Group. It cannot authorize a Host Transition.
-_Avoid_: Alternate authority, secondary control group, writable preview
+**Generic 429**
+: Unstructured HTTP 429. The default policy opens after two failures within 60 seconds, initially for 15 minutes and at most 30 minutes.
 
-### Scheduling & Pacing
+**Half-open lease**
+: A single-request recovery lease started atomically by Scheduler.Pick. Delayed successes that began before the lease cannot close it.
 
-**Cycle Burn Rate ($C_{\text{cycle}}$)**:
-The fraction of the total weekly quota capacity that can be consumed within a single saturated 5-hour short window.
-_Avoid_: Burn speed, consumption coefficient, usage weight
+**Observe mode**
+: Computes and reports exclusions but returns `Handled=false`; it must not consume round-robin cursors or half-open leases and must not change request behavior.
 
-**Dynamic Boost Horizon ($T_{\text{required}}$)**:
-The minimum physical time in hours required to consume all remaining weekly quota given the short-window bottleneck; triggers dynamic 999 priority boost when remaining time is less than or equal to this duration.
-_Avoid_: Boost threshold, near-reset deadline, emergency window
+**Enforce mode**
+: Scheduler owns Antigravity selection and excludes open entries. It requires uniform priority, fresh evidence, unique Scheduler ownership, Home disabled, healthy plugin state, and the Phase 0 deployment gates.
 
-**Weekly Urgency Index**:
-The mathematical ratio of remaining weekly quota proportion to remaining hours until weekly reset ($\text{Urgency}_{\text{weekly}} = R_{\text{7d}} / \max(T_{\text{7d}}, 0.5)$), representing unit-time burn pressure.
-_Avoid_: Priority score, account rank, sort index
+**Native CPA cooldown**
+: CPA's own auth/model cooldown. It remains necessary for same-request retries because `usage.handle` is asynchronous in CPA v7.2.141.
 
-**Equal Priority Clustering (Priority Bucketing)**:
-Grouping credentials with near-identical Weekly Urgency metrics ($\Delta \text{Urgency} \le \text{UrgencyTolerance}$) into the same priority integer tier, enabling CPA to perform round-robin load balancing across healthy peers instead of single-point saturation.
-_Avoid_: Random priority, flat priority, forced unique decrement
+## Non-goals
 
-**Urgency Tolerance**:
-The numerical delta threshold $\Delta \text{Urgency}$ (default 0.05) below which adjacent credentials are assigned identical priority scores.
-_Avoid_: Margin of error, floating threshold, priority gap
-
-**Fresh Evidence**:
-Verified quota observation data obtained from a successful probe in the current scheduling round. A failed probe is unknown rather than quota depletion and cannot authorize a quota-driven Host Transition.
-_Avoid_: Cached state, stale data, fallback record
-
-### Quota Depletion & Cooldown States
-
-**Host Transition**:
-A deliberate change to one credential's persisted priority and/or disabled state in CPA Host, including scheduled Apply, 429 Reactive Cooldown, and priority reset. All target fields belong to one transition outcome, whose success is determined by the resulting credential state rather than request completion alone.
-_Avoid_: Host write, patch operation, mutation
-
-**429 Reactive Cooldown (Circuit Breaker)**:
-Temporarily demoting an account's priority to `-1` upon encountering an upstream Google 429 Rate Limit error for a configurable duration (default 5 minutes), isolating the credential into the bottom fallback tier while preserving its enabled state.
-_Avoid_: Ban, account punishment, hard disable
-
-**Soft Depletion**:
-Setting priority to `-1` while maintaining `disabled = false` when the 5-hour short window is exhausted ($R_{\text{5h}} \le 0$), enabling automatic self-healing upon the 5-hour reset.
-_Avoid_: Temporary ban, mute, hard disable
-
-**Hard Depletion**:
-Setting priority to `-1` and marking `disabled = true` in host state when the 7-day weekly quota is completely exhausted ($R_{\text{7d}} \le 0$).
-_Avoid_: Account ban, credential deletion, permanent lockout
+- No priority scoring or `priority=-1` fallback.
+- No automatic or manual auth `disabled` mutation.
+- No `host.auth.save` from the official runtime path.
+- No Management operation that clears all cooldowns without a guarded probe.
+- No persistence of tokens, complete auth JSON, request bodies, or complete upstream error bodies.
