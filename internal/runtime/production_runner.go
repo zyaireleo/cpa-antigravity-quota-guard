@@ -50,6 +50,7 @@ func (r *Runtime) runProductionTask(ctx context.Context, request TaskRequest) er
 	}
 	files := inventory.Files
 	probedIdentities := guardIdentitiesByIndex(files)
+	ignoredGuardEvidence := disabledGuardAuthIndexes(files)
 	if err := r.updateGuardRosterFromFiles(files); err != nil {
 		return fmt.Errorf("refresh quota guard roster before probe: %w", err)
 	}
@@ -101,7 +102,7 @@ func (r *Runtime) runProductionTask(ctx context.Context, request TaskRequest) er
 	if err := r.updateGuardRosterFromFiles(postProbeFiles); err != nil {
 		return fmt.Errorf("reconcile quota guard roster after probe: %w", err)
 	}
-	r.applyGuardEvidence(evidence.ByGroup, probedIdentities)
+	r.applyGuardEvidence(evidence.ByGroup, probedIdentities, ignoredGuardEvidence)
 
 	if err := store.SaveAtomic(ctx); err != nil {
 		return err

@@ -516,6 +516,19 @@ func guardIdentitiesByIndex(files []host.AuthFile) map[string]guard.Identity {
 	return identities
 }
 
+func disabledGuardAuthIndexes(files []host.AuthFile) map[string]struct{} {
+	indexes := make(map[string]struct{})
+	for _, file := range files {
+		if !isAntigravityAuthFile(file) || !file.Disabled {
+			continue
+		}
+		if authIndex := strings.TrimSpace(file.AuthIndex); authIndex != "" {
+			indexes[authIndex] = struct{}{}
+		}
+	}
+	return indexes
+}
+
 func (r *Runtime) updateGuardRosterFromFiles(files []host.AuthFile) error {
 	if r.guardRuntime == nil {
 		return nil
@@ -570,7 +583,7 @@ func configuredGuardGroups(cfg config.GuardConfig) []guard.ModelGroup {
 	return groups
 }
 
-func (r *Runtime) applyGuardEvidence(byGroup map[config.AntigravityModelGroup]evidence.Result, probedIdentities map[string]guard.Identity) {
+func (r *Runtime) applyGuardEvidence(byGroup map[config.AntigravityModelGroup]evidence.Result, probedIdentities map[string]guard.Identity, ignoredAuthIndexes map[string]struct{}) {
 	if r.guardRuntime == nil {
 		return
 	}
@@ -583,8 +596,16 @@ func (r *Runtime) applyGuardEvidence(byGroup map[config.AntigravityModelGroup]ev
 	changed := false
 	for group, result := range byGroup {
 		for _, item := range result.Eligible {
-			identity, ok := probedIdentities[strings.TrimSpace(item.AuthIndex)]
+			authIndex := strings.TrimSpace(item.AuthIndex)
+			identity, ok := probedIdentities[authIndex]
 			if !ok {
+				if _, ignored := ignoredAuthIndexes[authIndex]; ignored {
+					// Quota collection intentionally includes disabled Antigravity
+					// credentials so the management cache can show their evidence.
+					// Disabled credentials are absent from the enforcement roster;
+					// their successful evidence is not a guard probe failure.
+					continue
+				}
 				engine.RecordQuotaProbeError()
 				continue
 			}

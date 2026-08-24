@@ -5,7 +5,7 @@
 ```text
 CLIProxyAPI tag:    v7.2.141
 CLIProxyAPI commit: dc3c3b1ec3ed04bb0917e76451eaf98c6842674d
-Plugin baseline:    cpa-antigravity-quota-guard v0.1.0
+Plugin baseline:    cpa-antigravity-quota-guard v0.1.1
 验证日期:           2026-08-24
 ```
 

@@ -10,7 +10,7 @@ const managementPageShellMarkup = `
             <div class="brand-zone">
                 <h1>
                     <span data-i18n="title">CPA Antigravity Quota Guard</span>
-                    <span class="version-badge">v0.1.0</span>
+                    <span class="version-badge">v0.1.1</span>
                 </h1>
             </div>
             <div class="topbar-actions">
