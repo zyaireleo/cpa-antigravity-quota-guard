@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-priority/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
 )
 
 func int64Ptr(v int64) *int64 {

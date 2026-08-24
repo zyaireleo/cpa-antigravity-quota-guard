@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	pluginruntime "github.com/zyaireleo/cpa-antigravity-quota-guard/internal/runtime"
 )
 
 type pluginEntry struct {
@@ -46,7 +50,7 @@ func TestRegistryJSON_SchemaValidation(t *testing.T) {
 
 	found := false
 	for _, p := range reg.Plugins {
-		if p.ID == "antigravity-priority" {
+		if p.ID == "cpa-antigravity-quota-guard" {
 			found = true
 			if p.Name == "" {
 				t.Error("plugin name must not be empty")
@@ -54,17 +58,17 @@ func TestRegistryJSON_SchemaValidation(t *testing.T) {
 			if p.Description == "" {
 				t.Error("plugin description must not be empty")
 			}
-			if p.Author != "ygq-future" {
-				t.Errorf("expected author ygq-future, got %q", p.Author)
+			if p.Author != "zyaireleo" {
+				t.Errorf("expected author zyaireleo, got %q", p.Author)
 			}
 			if p.Version == "" {
 				t.Error("plugin version must not be empty")
 			}
-			if p.Repository != "https://github.com/ygq-future/antigravity-priority" {
-				t.Errorf("expected repository https://github.com/ygq-future/antigravity-priority, got %q", p.Repository)
+			if p.Repository != "https://github.com/zyaireleo/cpa-antigravity-quota-guard" {
+				t.Errorf("unexpected repository %q", p.Repository)
 			}
-			if p.Homepage != "https://github.com/ygq-future/antigravity-priority" {
-				t.Errorf("expected homepage https://github.com/ygq-future/antigravity-priority, got %q", p.Homepage)
+			if p.Homepage != "https://github.com/zyaireleo/cpa-antigravity-quota-guard" {
+				t.Errorf("unexpected homepage %q", p.Homepage)
 			}
 			if p.License != "MIT" {
 				t.Errorf("expected MIT license, got %q", p.License)
@@ -76,7 +80,7 @@ func TestRegistryJSON_SchemaValidation(t *testing.T) {
 	}
 
 	if !found {
-		t.Error("plugin id antigravity-priority not found in registry.json")
+		t.Error("plugin id cpa-antigravity-quota-guard not found in registry.json")
 	}
 }
 
@@ -140,7 +144,7 @@ func TestWorkflows_Release_MatrixValidation(t *testing.T) {
 
 	// Verify required release steps and toolchains
 	releaseRequirements := []string{
-		"PLUGIN_NAME: antigravity-priority",
+		"PLUGIN_NAME: cpa-antigravity-quota-guard",
 		"checksums.txt",
 		"sha256sum",
 		"vmactions/freebsd-vm",
@@ -167,20 +171,75 @@ func TestDocumentation_BilingualCompleteness(t *testing.T) {
 
 		// Core sections and standardized CPA paths check
 		keywords := []string{
-			"antigravity-priority",
-			"Urgency",
-			"Boost",
-			"config",
+			"cpa-antigravity-quota-guard",
+			"gemini",
+			"claude_gpt",
+			"observe",
+			"enforce",
 			"registry.json",
-			"/v0/resource/plugins/antigravity-priority/status",
-			"/v0/management/plugins/antigravity-priority/run",
-			"/v0/management/plugins/antigravity-priority/diagnostics",
-			"/v0/management/plugins/antigravity-priority/snapshot/latest",
+			"/v0/resource/plugins/cpa-antigravity-quota-guard/status",
+			"/v0/management/cpa-antigravity-quota-guard/status",
+			"/v0/management/cpa-antigravity-quota-guard/config",
+			"/v0/management/cpa-antigravity-quota-guard/actions/probe",
+			"/v0/management/cpa-antigravity-quota-guard/actions/half-open",
 		}
 
 		for _, kw := range keywords {
 			if !strings.Contains(strings.ToLower(content), strings.ToLower(kw)) {
 				t.Errorf("%s missing keyword %q", docFile, kw)
+			}
+		}
+	}
+}
+
+func TestReleaseIdentityAndVersionConsistency(t *testing.T) {
+	data, err := os.ReadFile("registry.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registry storeRegistry
+	if err := json.Unmarshal(data, &registry); err != nil || len(registry.Plugins) != 1 {
+		t.Fatalf("invalid registry: err=%v plugins=%d", err, len(registry.Plugins))
+	}
+	entry := registry.Plugins[0]
+	if entry.ID != config.PluginID {
+		t.Fatalf("registry id=%q, config plugin id=%q", entry.ID, config.PluginID)
+	}
+	if config.PluginID != config.DynamicLibraryBaseName {
+		t.Fatalf("plugin id=%q, library basename=%q", config.PluginID, config.DynamicLibraryBaseName)
+	}
+	if config.PluginID != config.CPAConfigKey {
+		t.Fatalf("plugin id=%q, config key=%q", config.PluginID, config.CPAConfigKey)
+	}
+
+	runtime := pluginruntime.New(pluginruntime.Options{
+		StateCachePath: filepath.Join(t.TempDir(), "quota-cache.json"),
+		GuardStatePath: filepath.Join(t.TempDir(), "guard-state.json"),
+	})
+	t.Cleanup(func() { _ = runtime.Shutdown(context.Background()) })
+	result, err := runtime.Register(context.Background(), pluginruntime.RegisterRequest{ConfigYAML: "mode: observe\n", SchemaVersion: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Metadata.Version != entry.Version || result.Metadata.Name != entry.Name || result.Metadata.Author != entry.Author || result.Metadata.GitHubRepository != entry.Repository {
+		t.Fatalf("runtime metadata and registry differ: metadata=%+v registry=%+v", result.Metadata, entry)
+	}
+
+	checks := map[string][]string{
+		filepath.Join(".github", "workflows", "release.yml"):               {"PLUGIN_NAME: " + entry.ID},
+		filepath.Join("internal", "management", "feature_shell_assets.go"): {"v" + entry.Version},
+		filepath.Join(".github", "release-notes", "v"+entry.Version+".md"): {"# " + entry.ID + " v" + entry.Version, "### 中文", "### English"},
+		"README.md":    {entry.ID},
+		"README.en.md": {entry.ID},
+	}
+	for path, snippets := range checks {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, snippet := range snippets {
+			if !strings.Contains(string(content), snippet) {
+				t.Errorf("%s missing %q", path, snippet)
 			}
 		}
 	}

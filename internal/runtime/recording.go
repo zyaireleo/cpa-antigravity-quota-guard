@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"antigravity-priority/internal/apply"
-	"antigravity-priority/internal/host"
-	"antigravity-priority/internal/state"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/apply"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/state"
 )
 
 // projectRun is the one Runtime path that projects a run into the in-memory
@@ -15,13 +15,6 @@ import (
 // cache persistence health is recorded independently in result.Record.
 func (r *Runtime) projectRun(ctx context.Context, store *state.Store, result apply.Result, audit string, entry RunHistoryEntry) (apply.Result, error) {
 	return r.persistRun(ctx, store, result, audit, &entry)
-}
-
-// projectSnapshot persists the latest execution result without adding a
-// run-history entry. It is used for successful zero-change applies, where the
-// audit state is useful but no Host transition occurred.
-func (r *Runtime) projectSnapshot(ctx context.Context, store *state.Store, result apply.Result, audit string) (apply.Result, error) {
-	return r.persistRun(ctx, store, result, audit, nil)
 }
 
 func (r *Runtime) persistRun(ctx context.Context, store *state.Store, result apply.Result, audit string, entry *RunHistoryEntry) (apply.Result, error) {
@@ -84,16 +77,4 @@ func (r *Runtime) persistRun(ctx context.Context, store *state.Store, result app
 		return result, fmt.Errorf("persist execution result: %w", err)
 	}
 	return result, nil
-}
-
-func resultSummary(prefix string, result apply.Result) string {
-	return fmt.Sprintf("%s attempted=%d committed=%d no_change=%d failed=%d conflict=%d uncertain=%d skipped=%d",
-		prefix,
-		result.Transitions.Totals.Attempted,
-		result.Transitions.Totals.Committed,
-		result.Transitions.Totals.NoChange,
-		result.Transitions.Totals.Failed,
-		result.Transitions.Totals.Conflicts,
-		result.Transitions.Totals.Uncertain,
-		result.Skipped)
 }

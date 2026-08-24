@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"time"
 
-	"antigravity-priority/internal/core"
-	"antigravity-priority/internal/host"
-	"antigravity-priority/internal/priority"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/priority"
 )
 
 // PlanSnapshot is the plan projection shared by audit, diagnostics, and trusted adapters.

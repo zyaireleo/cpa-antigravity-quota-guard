@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-priority/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
 )
 
 func TestCalculateUrgency(t *testing.T) {

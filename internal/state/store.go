@@ -1,24 +1,29 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/core"
-	"antigravity-priority/internal/priority"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/priority"
 )
 
 // SchemaVersion is the current state cache document version.
 const SchemaVersion = 1
+
+const maxCacheFileSize = 16 << 20
 
 // ErrCorruptCache indicates the cache file could not be parsed as valid state JSON.
 var ErrCorruptCache = errors.New("state: corrupt cache")
@@ -162,19 +167,23 @@ func Load(ctx context.Context, path string) (*Store, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("load state context: %w", err)
 	}
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" || path == "." {
+		return nil, fmt.Errorf("read state cache: unsafe path")
+	}
 	store := &Store{path: path, entries: make(map[string]Entry), cooldowns: make(map[string]CooldownEntry)}
-	raw, err := os.ReadFile(path)
+	raw, err := readCacheFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return store, nil
 		}
 		return nil, fmt.Errorf("read state cache %s: %w", path, err)
 	}
-	if len(strings.TrimSpace(string(raw))) == 0 {
+	if len(bytes.TrimSpace(raw)) == 0 {
 		return store, nil
 	}
-	var doc document
-	if err := json.Unmarshal(raw, &doc); err != nil {
+	doc, err := decodeCacheDocument(raw)
+	if err != nil {
 		return store, fmt.Errorf("decode state cache %s: %w", path, errors.Join(ErrCorruptCache, err))
 	}
 	if doc.Entries != nil {
@@ -205,6 +214,53 @@ func Load(ctx context.Context, path string) (*Store, error) {
 	return store, nil
 }
 
+func readCacheFile(path string) ([]byte, error) {
+	if err := rejectCacheSymlinkComponents(path); err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > maxCacheFileSize {
+		return nil, fmt.Errorf("unsafe state cache file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	openedInfo, err := file.Stat()
+	if err != nil || !os.SameFile(info, openedInfo) || !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("unsafe state cache file")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maxCacheFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxCacheFileSize {
+		return nil, fmt.Errorf("state cache exceeds %d bytes", maxCacheFileSize)
+	}
+	return raw, nil
+}
+
+func decodeCacheDocument(raw []byte) (document, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var doc document
+	if err := decoder.Decode(&doc); err != nil {
+		return document{}, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return document{}, fmt.Errorf("trailing JSON")
+	}
+	if doc.SchemaVersion != 0 && doc.SchemaVersion != SchemaVersion {
+		return document{}, fmt.Errorf("unsupported schema version %d", doc.SchemaVersion)
+	}
+	return doc, nil
+}
+
 // SaveAtomic writes the store document to disk using a temporary file and rename.
 func (s *Store) SaveAtomic(ctx context.Context) (err error) {
 	if err := ctx.Err(); err != nil {
@@ -228,24 +284,122 @@ func (s *Store) SaveAtomic(ctx context.Context) (err error) {
 		return fmt.Errorf("encode state cache: %w", err)
 	}
 
+	data = append(data, '\n')
+	if len(data) > maxCacheFileSize {
+		return fmt.Errorf("encoded state cache exceeds %d bytes", maxCacheFileSize)
+	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := rejectCacheSymlinkComponents(dir); err != nil {
+		return fmt.Errorf("validate state cache dir %s: %w", dir, err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create state cache dir %s: %w", dir, err)
 	}
-	tmpPath := filepath.Join(dir, filepath.Base(path)+".tmp")
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("secure state cache dir %s: %w", dir, err)
+	}
+	if err := rejectCacheSymlinkComponents(dir); err != nil {
+		return fmt.Errorf("validate state cache dir %s: %w", dir, err)
+	}
+	if info, statErr := os.Lstat(path); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("unsafe state cache target")
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("inspect state cache target: %w", statErr)
+	}
+	temporary, err := os.CreateTemp(dir, ".quota-cache-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create state cache temp: %w", err)
+	}
+	tmpPath := temporary.Name()
 	defer func() {
+		_ = temporary.Close()
 		if err != nil {
 			_ = os.Remove(tmpPath)
 		}
 	}()
 
-	if err = os.WriteFile(tmpPath, data, 0o600); err != nil {
+	if err = temporary.Chmod(0o600); err != nil {
+		return fmt.Errorf("chmod state cache temp: %w", err)
+	}
+	if _, err = temporary.Write(data); err != nil {
 		return fmt.Errorf("write state cache temp: %w", err)
+	}
+	if err = temporary.Sync(); err != nil {
+		return fmt.Errorf("fsync state cache temp: %w", err)
+	}
+	if err = temporary.Close(); err != nil {
+		return fmt.Errorf("close state cache temp: %w", err)
 	}
 	if err = os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("rename state cache temp: %w", err)
 	}
+	if err = syncCacheDirectory(dir); err != nil {
+		return fmt.Errorf("fsync state cache dir: %w", err)
+	}
+	readBack, readErr := readCacheFile(path)
+	if readErr != nil {
+		return fmt.Errorf("read back state cache: %w", readErr)
+	}
+	if !bytes.Equal(readBack, data) {
+		return fmt.Errorf("state cache read-back mismatch")
+	}
+	if _, decodeErr := decodeCacheDocument(readBack); decodeErr != nil {
+		return fmt.Errorf("verify state cache: %w", decodeErr)
+	}
 	return nil
+}
+
+func rejectCacheSymlinkComponents(path string) error {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" || path == "." {
+		return nil
+	}
+	if filepath.IsAbs(path) {
+		// Public configuration rejects absolute paths. Explicit test/dev
+		// overrides may live below macOS' /var -> /private/var system symlink.
+		return nil
+	}
+	volume := filepath.VolumeName(path)
+	current := volume + string(filepath.Separator)
+	componentsPath := strings.TrimPrefix(path, current)
+	if !filepath.IsAbs(path) {
+		current = "."
+		componentsPath = path
+	}
+	for _, component := range strings.Split(componentsPath, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		if component == ".." {
+			return fmt.Errorf("unsafe state cache path")
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("unsafe state cache symlink")
+		}
+	}
+	return nil
+}
+
+func syncCacheDirectory(directory string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	directoryFile, err := os.Open(directory)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = directoryFile.Close() }()
+	return directoryFile.Sync()
 }
 
 // SetRuntimeSnapshot updates the persistent snapshot and run history.

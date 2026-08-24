@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"antigravity-priority/internal/host"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
 )
 
 type mockHostCallbacks struct {
@@ -89,7 +89,7 @@ func TestClient_ReadAndSave(t *testing.T) {
 	}
 }
 
-func TestClient_GetAuthLoadsPhysicalDocument(t *testing.T) {
+func TestClient_GetAuthNeverLoadsPhysicalDocument(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	if err := os.WriteFile(path, []byte(`{"access_token":"secret","priority":10}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -103,8 +103,8 @@ func TestClient_GetAuthLoadsPhysicalDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(doc.JSON), "priority") {
-		t.Fatalf("expected physical JSON to be loaded, got %s", doc.JSON)
+	if len(doc.JSON) != 0 {
+		t.Fatalf("host path was unexpectedly read: %s", doc.JSON)
 	}
 }
 

@@ -4,11 +4,11 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/core"
-	"antigravity-priority/internal/evidence"
-	"antigravity-priority/internal/priority"
-	"antigravity-priority/internal/provider/antigravity"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/evidence"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/priority"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/provider/antigravity"
 )
 
 func TestClassify_CurrentRoundEvidenceAuthority(t *testing.T) {

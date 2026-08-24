@@ -15,48 +15,14 @@ const templateScriptShellCore = `        const LANG_STORAGE_KEY = "antigravity_p
         let probeCooldownTimer = null;
         let scheduleConfig = null;
         let dynamicConfig = null;
+		let managementKey = "";
 
         function getManagementKey() {
-            try {
-                const keys = ['management_key', 'management-key', 'managementKey', 'cpa_management_key', 'admin_key', 'key'];
-                for (const k of keys) {
-                    const v = localStorage.getItem(k) || sessionStorage.getItem(k);
-                    if (v && v.trim()) return v.trim();
-                }
-            } catch (_) {}
-
-            try {
-                if (window.parent && window.parent !== window) {
-                    const keys = ['management_key', 'management-key', 'managementKey', 'cpa_management_key', 'admin_key', 'key'];
-                    for (const k of keys) {
-                        const v = window.parent.localStorage.getItem(k) || window.parent.sessionStorage.getItem(k);
-                        if (v && v.trim()) return v.trim();
-                    }
-                    const parentParams = new URLSearchParams(window.parent.location.search);
-                    const pKey = parentParams.get('key') || parentParams.get('management_key') || parentParams.get('management-key');
-                    if (pKey && pKey.trim()) return pKey.trim();
-                }
-            } catch (_) {}
-
-            try {
-                const params = new URLSearchParams(window.location.search);
-                const qKey = params.get('key') || params.get('management_key') || params.get('management-key');
-                if (qKey && qKey.trim()) return qKey.trim();
-            } catch (_) {}
-
-            return "";
+			return managementKey;
         }
 
         function setSavedKey(key) {
-            try {
-                if (key) {
-                    localStorage.setItem('management_key', key.trim());
-                    sessionStorage.setItem('management_key', key.trim());
-                } else {
-                    localStorage.removeItem('management_key');
-                    sessionStorage.removeItem('management_key');
-                }
-            } catch (_) {}
+			managementKey = key ? key.trim() : "";
         }
 
         function openKeyModal() {

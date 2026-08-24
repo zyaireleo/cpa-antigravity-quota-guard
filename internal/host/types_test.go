@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"antigravity-priority/internal/host"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
 )
 
 func TestAuthFile_UnmarshalJSON(t *testing.T) {

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-priority/internal/apply"
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/management"
-	"antigravity-priority/internal/state"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/apply"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/management"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/state"
 )
 
 type mockRunner struct {

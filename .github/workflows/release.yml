@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  PLUGIN_NAME: antigravity-priority
+  PLUGIN_NAME: cpa-antigravity-quota-guard
   INPUT_TAG: ${{ inputs.tag }}
 
 jobs:
@@ -24,15 +24,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26.7"
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@db9de0fc1a667e1a49d2291a1a042dff081d78f6 # v9
         with:
           version: v2.12.2
           verify: false
@@ -49,10 +49,10 @@ jobs:
           - macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26.7"
 
@@ -64,15 +64,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26.7"
 
       - name: Setup MSYS2
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         timeout-minutes: 15
         with:
           msystem: UCRT64
@@ -98,7 +98,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Create release
         shell: bash
@@ -165,10 +165,10 @@ jobs:
             ext: so
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26.7"
 
@@ -210,7 +210,7 @@ jobs:
             echo "release tag must point to current workflow commit" >&2
             exit 1
           fi
-          gh release upload "${tag}" dist/*.zip --clobber
+          gh release upload "${tag}" dist/*.zip
 
   build-windows:
     name: Build windows_amd64
@@ -220,15 +220,15 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26.7"
 
       - name: Setup MSYS2
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         timeout-minutes: 15
         with:
           msystem: UCRT64
@@ -282,7 +282,7 @@ jobs:
           if ($tagSha -ne $headSha) {
             throw "release tag must point to current workflow commit"
           }
-          gh release upload $tag dist/*.zip --clobber
+          gh release upload $tag dist/*.zip
 
   build-windows-arm64:
     name: Build windows_arm64
@@ -292,15 +292,15 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26.7"
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.14.1
           use-cache: false
@@ -345,7 +345,7 @@ jobs:
             echo "release tag must point to current workflow commit" >&2
             exit 1
           fi
-          gh release upload "${tag}" dist/*.zip --clobber
+          gh release upload "${tag}" dist/*.zip
 
   build-freebsd:
     name: Build freebsd_amd64
@@ -355,10 +355,10 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Build package
-        uses: vmactions/freebsd-vm@v1
+        uses: vmactions/freebsd-vm@d0518f912576ae759075aa00fb9fe27037940271 # v1
         env:
           INPUT_TAG: ${{ inputs.tag }}
           PLUGIN_NAME: ${{ env.PLUGIN_NAME }}
@@ -403,7 +403,7 @@ jobs:
             echo "release tag must point to current workflow commit" >&2
             exit 1
           fi
-          gh release upload "${tag}" dist/*.zip --clobber
+          gh release upload "${tag}" dist/*.zip
 
   publish-release:
     name: Publish checksums and notes
@@ -418,7 +418,7 @@ jobs:
       - build-freebsd
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Generate checksums and release notes
         shell: bash
@@ -457,5 +457,5 @@ jobs:
           mkdir -p dist
           gh release download "${tag}" --pattern "${PLUGIN_NAME}_*.zip" --dir dist --clobber
           (cd dist && sha256sum "${PLUGIN_NAME}"_*.zip > checksums.txt)
-          gh release upload "${tag}" dist/checksums.txt --clobber
+          gh release upload "${tag}" dist/checksums.txt
           gh release edit "${tag}" --title "${tag}" --notes-file "${RUNNER_TEMP}/release-notes.md"

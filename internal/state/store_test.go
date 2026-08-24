@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-priority/internal/core"
-	"antigravity-priority/internal/state"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/state"
 )
 
 func TestStore_Load_NotExist(t *testing.T) {
@@ -69,6 +69,37 @@ func TestStore_Load_Corrupt(t *testing.T) {
 	}
 	if !errors.Is(err, state.ErrCorruptCache) {
 		t.Fatalf("expected ErrCorruptCache, got %v", err)
+	}
+}
+
+func TestStoreRejectsSymlinkTargetAndRelativeParent(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "target.json")
+	if err := os.WriteFile(target, []byte(`{"schema_version":1,"entries":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "cache.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.Load(context.Background(), link); err == nil {
+		t.Fatal("state cache target symlink was accepted")
+	}
+
+	working := t.TempDir()
+	outside := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(working); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+	if err := os.Symlink(outside, "data"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.Load(context.Background(), "data/cpa-antigravity-quota-guard/cache.json"); err == nil {
+		t.Fatal("state cache parent symlink was accepted")
 	}
 }
 

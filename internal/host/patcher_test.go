@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"antigravity-priority/internal/host"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
 )
 
 func TestDocumentPatcher_ReplaceIsAtomicAndPreservesMode(t *testing.T) {

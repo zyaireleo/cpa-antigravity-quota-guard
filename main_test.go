@@ -137,7 +137,7 @@ func main() {
 			} ` + q + `json:"metadata"` + q + `
 		} ` + q + `json:"result"` + q + `
 	}
-	if err := json.Unmarshal(respBytes, &envelope); err != nil || !envelope.OK || envelope.Result.Metadata.Name != "Antigravity Priority" {
+	if err := json.Unmarshal(respBytes, &envelope); err != nil || !envelope.OK || envelope.Result.Metadata.Name != "CPA Antigravity Quota Guard" {
 		fmt.Fprintf(os.Stderr, "invalid envelope: %s\n", string(respBytes))
 		os.Exit(1)
 	}
@@ -161,7 +161,7 @@ func main() {
 	// 5. Verify repeated calls and memory freeing
 	for i := 0; i < 5; i++ {
 		methodMgmt := append([]byte("management.handle"), 0)
-		reqMgmt := []byte("{\"Method\":\"GET\",\"Path\":\"/v0/management/plugins/antigravity-priority/diagnostics\"}")
+		reqMgmt := []byte("{\"Method\":\"GET\",\"Path\":\"/v0/management/cpa-antigravity-quota-guard/status\"}")
 		respBuf = cliproxyBuffer{}
 		ret, _, _ = callProc.Call(
 			uintptr(unsafe.Pointer(&methodMgmt[0])),

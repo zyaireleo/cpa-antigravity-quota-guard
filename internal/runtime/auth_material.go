@@ -5,11 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
-	"antigravity-priority/internal/core"
-	"antigravity-priority/internal/host"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/host"
 )
 
 type authMaterial struct {
@@ -28,7 +27,6 @@ func enrichCredentialsFromAuthDocuments(ctx context.Context, client *host.Client
 			return nil, nil, err
 		}
 		if len(rawJSON) > 0 {
-			enriched[index].RawJSON = rawJSON
 			if priority, present, priorityErr := priorityFromJSON(rawJSON); priorityErr == nil {
 				if present {
 					enriched[index].Priority = priority
@@ -66,18 +64,11 @@ func physicalAuthJSON(ctx context.Context, document host.AuthDocument) (json.Raw
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("read auth document context: %w", err)
 	}
-	if strings.TrimSpace(document.Path) != "" {
-		data, err := os.ReadFile(document.Path)
-		if err != nil {
-			return nil, fmt.Errorf("read auth document path: %w", err)
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("read auth document context: %w", err)
-		}
-		if !json.Valid(data) {
-			return nil, errors.New("auth document path contains invalid JSON")
-		}
-		return append(json.RawMessage(nil), data...), nil
+	if len(document.JSON) == 0 {
+		return nil, errors.New("host.auth.get returned an empty JSON document")
+	}
+	if !json.Valid(document.JSON) {
+		return nil, errors.New("host.auth.get returned invalid JSON")
 	}
 	return append(json.RawMessage(nil), document.JSON...), nil
 }

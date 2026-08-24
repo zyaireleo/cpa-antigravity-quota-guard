@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"antigravity-priority/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
 )
 
 func TestParseAvailableModels_DualWindow(t *testing.T) {
@@ -337,6 +337,40 @@ func TestParseAvailableModels_DepletionPriority(t *testing.T) {
 	}
 	if result5h.Remaining == nil || *result5h.Remaining != 0 {
 		t.Errorf("expected Remaining=0, got %v", result5h.Remaining)
+	}
+}
+
+func TestParseAvailableModels_AggregatesMostConstrainedModelWindow(t *testing.T) {
+	raw := []byte(`{
+		"models": {
+			"gemini-healthy": {"quotaInfo":{"windows":[
+				{"name":"5h","remainingFraction":0.80,"resetTime":"2026-08-24T15:00:00Z"},
+				{"name":"weekly","remainingFraction":0.60,"resetTime":"2026-08-31T00:00:00Z"}
+			]}},
+			"gemini-depleted-a": {"quotaInfo":{"windows":[
+				{"name":"5h","remainingFraction":0.0,"resetTime":"2026-08-24T16:00:00Z"}
+			]}},
+			"gemini-depleted-b": {"quotaInfo":{"windows":[
+				{"name":"5h","remainingFraction":0.0,"resetTime":"2026-08-24T18:00:00Z"}
+			]}}
+		}
+	}`)
+
+	observedAt := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	for iteration := 0; iteration < 100; iteration++ {
+		result := ParseAvailableModels(raw, observedAt, ModelGroupGemini)
+		if result.Status != StatusReady {
+			t.Fatalf("iteration %d: status=%v error=%q", iteration, result.Status, result.Error)
+		}
+		if result.Remaining == nil || *result.Remaining != 0 || result.ShortWindowRemaining == nil || *result.ShortWindowRemaining != 0 {
+			t.Fatalf("iteration %d: effective=%v short=%v, want both 0", iteration, result.Remaining, result.ShortWindowRemaining)
+		}
+		if result.ResetAt == nil || !result.ResetAt.Equal(time.Date(2026, 8, 24, 18, 0, 0, 0, time.UTC)) {
+			t.Fatalf("iteration %d: reset_at=%v, want latest depleted reset", iteration, result.ResetAt)
+		}
+		if result.ShortWindowResetAt == nil || !result.ShortWindowResetAt.Equal(*result.ResetAt) {
+			t.Fatalf("iteration %d: short reset=%v effective reset=%v", iteration, result.ShortWindowResetAt, result.ResetAt)
+		}
 	}
 }
 

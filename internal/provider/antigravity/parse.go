@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"antigravity-priority/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
 )
 
 type availableModelsResponse struct {
@@ -201,12 +201,29 @@ func pickEffectiveWindow(windows []candidateWindow) (candidateWindow, bool) {
 }
 
 func firstWindow(windows []candidateWindow, windowType WindowType) (candidateWindow, bool) {
+	var selected candidateWindow
+	found := false
 	for _, window := range windows {
-		if window.window == windowType {
-			return window, true
+		if window.window != windowType {
+			continue
+		}
+		if !found || window.remaining < selected.remaining ||
+			(window.remaining == selected.remaining && laterReset(window.resetAt, selected.resetAt)) {
+			selected = window
+			found = true
 		}
 	}
-	return candidateWindow{}, false
+	return selected, found
+}
+
+func laterReset(candidate, current *time.Time) bool {
+	if candidate == nil {
+		return false
+	}
+	if current == nil {
+		return true
+	}
+	return candidate.After(*current)
 }
 
 func quotaFieldsToWindow(rawRemaining any, rawReset any, windowType WindowType) (candidateWindow, bool) {

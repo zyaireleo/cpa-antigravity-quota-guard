@@ -3,7 +3,7 @@ package runtime
 import (
 	"testing"
 
-	"antigravity-priority/internal/apply"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/apply"
 )
 
 func TestManagementRunHistoryOverlaysFullEmailAtAdapterBoundary(t *testing.T) {

@@ -4,8 +4,8 @@ import (
 	"slices"
 	"time"
 
-	"antigravity-priority/internal/config"
-	"antigravity-priority/internal/core"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/config"
+	"github.com/zyaireleo/cpa-antigravity-quota-guard/internal/core"
 )
 
 const (
