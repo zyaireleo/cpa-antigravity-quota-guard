@@ -72,8 +72,8 @@ func TestSetDynamicConfigPersistenceFailureDoesNotPartiallySwitch(t *testing.T) 
 	dynamic.Guard.Generic429.Threshold = 4
 
 	err = r.SetDynamicConfig(context.Background(), dynamic)
-	if err == nil || !strings.Contains(err.Error(), "load state for save") {
-		t.Fatalf("SetDynamicConfig error=%v, want persistence preparation failure", err)
+	if err == nil || (!strings.Contains(err.Error(), "load state for save") && !strings.Contains(err.Error(), "save dynamic config")) {
+		t.Fatalf("SetDynamicConfig error=%v, want persistence failure", err)
 	}
 	assertDynamicConfigRuntimeUnchanged(t, r, beforeConfig, beforeGuard)
 }

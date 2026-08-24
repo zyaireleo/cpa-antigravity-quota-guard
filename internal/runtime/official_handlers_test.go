@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -264,6 +265,9 @@ func TestEnforceRejectsMissingRequiredSchedulerHostFeatures(t *testing.T) {
 }
 
 func TestEnforcePreflightRejectsUnwritableGuardState(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX chmod-based unwritable-directory check is not portable to Windows")
+	}
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	stateDir := t.TempDir()
 	statePath := filepath.Join(stateDir, "guard.json")
