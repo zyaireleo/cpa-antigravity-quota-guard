@@ -90,6 +90,14 @@ func (e *Engine) Pick(request PickRequest) (result PickResult) {
 			}
 			continue
 		}
+		// A stale closed entry cannot be trusted for a new request. Open and
+		// half-open entries may still consume their existing recovery probe;
+		// that probe is the mechanism which refreshes their evidence.
+		if (entry.State == StateClosed || entry.State == StateUninitialized) &&
+			!EvidenceFresh(*entry, request.Now, e.config.EvidenceMaxAge) {
+			excluded++
+			continue
+		}
 		switch entry.State {
 		case StateClosed:
 			available = append(available, pickCandidate{Candidate: normalizedCandidate(candidate, entry), entry: entry})

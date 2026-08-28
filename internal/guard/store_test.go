@@ -135,7 +135,7 @@ func TestLoadRejectsUnknownAndDuplicateState(t *testing.T) {
 	}
 }
 
-func TestReadyRequiresBothFreshGroupsAndUniformPriority(t *testing.T) {
+func TestReadyRequiresFreshEvidencePerGroupAndUniformPriority(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	engine := testEngine(t)
@@ -159,9 +159,20 @@ func TestReadyRequiresBothFreshGroupsAndUniformPriority(t *testing.T) {
 	if !readiness.Ready || !readiness.UniformPriority || readiness.Priority != 100 {
 		t.Fatalf("ready state = %#v", readiness)
 	}
-	stale := engine.Ready(now.Add(time.Hour), 30*time.Minute)
+	for _, group := range []ModelGroup{ModelGroupGemini, ModelGroupClaudeGPT} {
+		applyPositive(t, engine, "a", group, now.Add(time.Hour))
+	}
+	partial := engine.Ready(now.Add(time.Hour+time.Minute), 30*time.Minute)
+	if !partial.Ready {
+		t.Fatalf("one stale account blocked fresh roster: %#v", partial)
+	}
+	applyPositive(t, engine, "a", ModelGroupClaudeGPT, now.Add(2*time.Hour))
+	stale := engine.Ready(now.Add(2*time.Hour+time.Minute), 30*time.Minute)
 	if stale.Ready {
-		t.Fatalf("stale evidence reported ready: %#v", stale)
+		t.Fatalf("group without fresh evidence reported ready: %#v", stale)
+	}
+	if !containsString(stale.Reasons, "stale_evidence:gemini") {
+		t.Fatalf("stale group reason missing: %#v", stale)
 	}
 }
 
