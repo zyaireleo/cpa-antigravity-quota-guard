@@ -43,7 +43,7 @@
 
 `enforce` 前必须确认：
 
-1. Core 基于 CLIProxyAPI `v7.2.141` / `dc3c3b1ec3ed04bb0917e76451eaf98c6842674d` 的增强改动构建。
+1. Core 基于 CLIProxyAPI `v7.2.144` / `d36b776c790a4d58027fd4fb434800fb5334bceb` 的增强改动构建；本轮私有兼容合并提交为 `39bcde17`。
 2. lifecycle 协商同时包含：
    - `required_scheduler_v1`
    - `scheduler_request_id_v1`
