@@ -1,12 +1,13 @@
-# Phase 0：CLIProxyAPI v7.2.141 与 Core 增强 ABI 闸门
+# Phase 0：CLIProxyAPI v7.2.144 与 Core 增强 ABI 闸门
 
 ## 固定基线
 
 ```text
-CLIProxyAPI tag:    v7.2.141
-CLIProxyAPI commit: dc3c3b1ec3ed04bb0917e76451eaf98c6842674d
+CLIProxyAPI tag:    v7.2.144
+CLIProxyAPI commit: d36b776c790a4d58027fd4fb434800fb5334bceb
+Private Core merge: 39bcde17
 Plugin baseline:    cpa-antigravity-quota-guard v0.1.1
-验证日期:           2026-08-24
+验证日期:           2026-08-28
 ```
 
 本闸门不访问真实生产账号，不写生产 auth 文件。
@@ -168,3 +169,12 @@ remote: upstream=https://github.com/router-for-me/CLIProxyAPI.git
 - 本地 Core 增强候选：自动化测试和隔离环境 `enforce` 已通过；生产灰度仍需提交、构建、Release 和上线审批。
 - 不得宣称异步 `usage.handle` 替代了 CPA 原生 cooldown；同请求 retry 仍必须由 Core 原生 MarkResult/cooldown 跳过刚失败账号。
 - GitHub Core Fork、commit、push、PR、Release 和生产部署均尚未执行。
+
+## 2026-08-28 v7.2.144 兼容性复核
+
+- 上游基线为 tag `v7.2.144`、commit `d36b776c790a4d58027fd4fb434800fb5334bceb`；本轮私有 Core 合并提交为 `39bcde17`。
+- v7.2.144 将 WebSocket response observer 作为 ABI schema version 4 的新增能力；本插件不使用该 observer，继续声明 schema version 3，不改插件接口或版本 `0.1.1`。
+- 插件 `main` 固定源码提交为 `13e6c84877e939c9ab467a9b75c1db742796efaa`，相对 `quota-guard-v0.1.1`（`40031b1ebf86cf2fb317ea7b577a92cf85166b8b`）仅包含测试变更，运行时代码无差异。
+- 本地已通过 `go test -race ./...`、`go vet ./...` 与 pinned `golangci-lint v2.12.2`；Linux `CGO_ENABLED=1` 动态库构建、注册和真实请求验收仍以 216 受控环境证据为准。
+
+本节记录目标版本的兼容性门禁；上文 v7.2.141 测试与行为描述保留为历史基线，不替代 v7.2.144 的生产验收。

@@ -5,10 +5,10 @@
 Development baselines:
 
 - Upstream plugin baseline: `ygq-future/antigravity-priority` `v1.2.9` / `373f44b430c5eb770fb63657da9a7983c5cdabff`
-- CPA ABI baseline: CLIProxyAPI `v7.2.141` / `dc3c3b1ec3ed04bb0917e76451eaf98c6842674d`
+- CPA ABI baseline: CLIProxyAPI `v7.2.144` / `d36b776c790a4d58027fd4fb434800fb5334bceb`
 - Current version: `0.1.1`
 
-> The default mode is `observe`. Stock CLIProxyAPI `v7.2.141` supports `observe` only; `enforce` requires the companion CLIProxyAPI Core extensions plus host-feature negotiation and the `required-scheduler-for` gate.
+> The default mode is `observe`. Stock CLIProxyAPI `v7.2.144` supports `observe` only; `enforce` requires the companion CLIProxyAPI Core extensions (current compatibility merge `39bcde17`) plus host-feature negotiation and the `required-scheduler-for` gate.
 
 ## Core behavior
 
@@ -84,7 +84,7 @@ plugins:
 
 All gates must pass:
 
-1. Run the Core extensions based on CLIProxyAPI `v7.2.141`, with all host features advertised:
+1. Run the Core extensions based on CLIProxyAPI `v7.2.144` (private compatibility merge `39bcde17`), with all host features advertised:
    - `required_scheduler_v1`
    - `scheduler_request_id_v1`
    - `scheduler_direct_response_v1`
@@ -125,7 +125,7 @@ The Management Key is not accepted through URL query parameters and is never wri
 
 ## CPA Core compatibility boundary
 
-In CLIProxyAPI `v7.2.141`, `usage.handle` is dispatched asynchronously. The plugin alone therefore cannot guarantee that a newly observed 429 reaches the guard before the same inbound request performs its next credential retry; that path still relies on CPA's native cooldown.
+Historical note: in CLIProxyAPI `v7.2.141`, `usage.handle` is dispatched asynchronously. The plugin alone therefore cannot guarantee that a newly observed 429 reaches the guard before the same inbound request performs its next credential retry; that path still relies on CPA's native cooldown.
 
 Long-term `enforce` requires the Core extensions:
 
@@ -136,7 +136,7 @@ Long-term `enforce` requires the Core extensions:
 - A required Scheduler can return `DelegateBuiltin=configured` in `observe` mode or for unenforced model groups, preserving the host's configured routing strategy and cursor without allowing built-in selection to reintroduce excluded credentials.
 - Home mode also fails the required route closed.
 
-Stock Core does not provide these guarantees, so the plugin refuses `enforce` on stock `v7.2.141`; `observe` remains compatible.
+Stock Core does not provide these guarantees, so the plugin refuses `enforce` on stock `v7.2.144`; `observe` remains compatible.
 
 ## Local Dev Server
 

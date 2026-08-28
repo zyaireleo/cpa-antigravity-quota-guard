@@ -5,10 +5,10 @@
 当前开发基线：
 
 - 上游插件基线：`ygq-future/antigravity-priority` `v1.2.9` / `373f44b430c5eb770fb63657da9a7983c5cdabff`
-- CPA ABI 基线：CLIProxyAPI `v7.2.141` / `dc3c3b1ec3ed04bb0917e76451eaf98c6842674d`
+- CPA ABI 基线：CLIProxyAPI `v7.2.144` / `d36b776c790a4d58027fd4fb434800fb5334bceb`
 - 当前版本：`0.1.1`
 
-> 默认运行在 `observe`。stock CLIProxyAPI `v7.2.141` 只支持 `observe`；`enforce` 必须配套本项目的 CLIProxyAPI Core 增强，并通过 host feature 协商与 `required-scheduler-for` 闸门。
+> 默认运行在 `observe`。stock CLIProxyAPI `v7.2.144` 只支持 `observe`；`enforce` 必须配套本项目的 CLIProxyAPI Core 增强（当前兼容合并提交 `39bcde17`），并通过 host feature 协商与 `required-scheduler-for` 闸门。
 
 ## 核心行为
 
@@ -84,7 +84,7 @@ plugins:
 
 启用前必须全部满足：
 
-1. 使用 CLIProxyAPI `v7.2.141` 基线上的 Core 增强版本，并由宿主声明全部 feature：
+1. 使用 CLIProxyAPI `v7.2.144` 基线上的 Core 增强版本（私有兼容合并提交 `39bcde17`），并由宿主声明全部 feature：
    - `required_scheduler_v1`
    - `scheduler_request_id_v1`
    - `scheduler_direct_response_v1`
@@ -125,7 +125,7 @@ Management Key 不接受 URL query，不写入 `localStorage` 或 `sessionStorag
 
 ## CPA Core 兼容边界
 
-CLIProxyAPI `v7.2.141` 中，`usage.handle` 是异步派发，因此插件不能单独保证在同一入站请求的下一次 credential retry 之前收到刚发生的 429；该场景仍依赖 CPA 原生 cooldown。
+历史说明：CLIProxyAPI `v7.2.141` 中，`usage.handle` 是异步派发，因此插件不能单独保证在同一入站请求的下一次 credential retry 之前收到刚发生的 429；该场景仍依赖 CPA 原生 cooldown。
 
 长期 `enforce` 已确认需要 Core 增强：
 
@@ -136,7 +136,7 @@ CLIProxyAPI `v7.2.141` 中，`usage.handle` 是异步派发，因此插件不能
 - required Scheduler 可用 `DelegateBuiltin=configured` 在 `observe` 或未启用的模型组中委托宿主当前 configured selector，保留原 routing strategy 和 cursor；宿主不会重新选中已由插件排除的账号。
 - Home 开启时同样 fail-closed。
 
-stock Core 不提供这些保证，因此插件会拒绝在 stock Core 上进入 `enforce`；`observe` 仍兼容 stock `v7.2.141`。
+stock Core 不提供这些保证，因此插件会拒绝在 stock Core 上进入 `enforce`；`observe` 仍兼容 stock `v7.2.144`。
 
 ## 本地 Dev Server
 
