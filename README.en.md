@@ -6,7 +6,7 @@ Development baselines:
 
 - Upstream plugin baseline: `ygq-future/antigravity-priority` `v1.2.9` / `373f44b430c5eb770fb63657da9a7983c5cdabff`
 - CPA ABI baseline: CLIProxyAPI `v7.2.144` / `d36b776c790a4d58027fd4fb434800fb5334bceb`
-- Current version: `0.1.1`
+- Current version: `0.1.3`
 
 > The default mode is `observe`. Stock CLIProxyAPI `v7.2.144` supports `observe` only; `enforce` requires the companion CLIProxyAPI Core extensions (current compatibility merge `39bcde17`) plus host-feature negotiation and the `required-scheduler-for` gate.
 

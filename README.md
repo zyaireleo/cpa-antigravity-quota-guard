@@ -6,7 +6,7 @@
 
 - 上游插件基线：`ygq-future/antigravity-priority` `v1.2.9` / `373f44b430c5eb770fb63657da9a7983c5cdabff`
 - CPA ABI 基线：CLIProxyAPI `v7.2.144` / `d36b776c790a4d58027fd4fb434800fb5334bceb`
-- 当前版本：`0.1.1`
+- 当前版本：`0.1.3`
 
 > 默认运行在 `observe`。stock CLIProxyAPI `v7.2.144` 只支持 `observe`；`enforce` 必须配套本项目的 CLIProxyAPI Core 增强（当前兼容合并提交 `39bcde17`），并通过 host feature 协商与 `required-scheduler-for` 闸门。
 
