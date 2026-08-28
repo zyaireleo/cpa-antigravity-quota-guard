@@ -6,7 +6,7 @@
       "name": "CPA Antigravity Quota Guard",
       "description": "Per-account and per-model-group quota circuit breaker for Google Antigravity credentials in CLIProxyAPI.",
       "author": "zyaireleo",
-      "version": "0.1.1",
+      "version": "0.1.3",
       "repository": "https://github.com/zyaireleo/cpa-antigravity-quota-guard",
       "homepage": "https://github.com/zyaireleo/cpa-antigravity-quota-guard",
       "license": "MIT",

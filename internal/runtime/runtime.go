@@ -851,7 +851,7 @@ func redactRuntimeIdentifier(value string) string {
 func buildMetadata() Metadata {
 	return Metadata{
 		Name:             "CPA Antigravity Quota Guard",
-		Version:          "0.1.1",
+		Version:          "0.1.3",
 		Author:           "zyaireleo",
 		GitHubRepository: "https://github.com/zyaireleo/cpa-antigravity-quota-guard",
 		Description:      "Per-account, per-model-group quota circuit breaker for Google Antigravity credentials in CLIProxyAPI.",
