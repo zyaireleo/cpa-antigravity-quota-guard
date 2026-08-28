@@ -51,6 +51,32 @@ func TestPickFiltersOnlyMatchingGroupAndRoundRobins(t *testing.T) {
 	}
 }
 
+func TestPickExcludesStaleEvidenceButUsesFreshCandidate(t *testing.T) {
+	t.Parallel()
+	old := time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	engine := testEngine(t)
+	if err := engine.ReplaceRoster([]Identity{testIdentity("a", 100), testIdentity("b", 100)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, index := range []string{"a", "b"} {
+		applyPositive(t, engine, index, ModelGroupGemini, old)
+		applyPositive(t, engine, index, ModelGroupClaudeGPT, old)
+	}
+	applyPositive(t, engine, "b", ModelGroupGemini, now)
+	applyPositive(t, engine, "b", ModelGroupClaudeGPT, now)
+	pick := engine.Pick(PickRequest{
+		Now: now, Provider: "antigravity", Model: "gemini-2.5-pro", Mode: ModeEnforce,
+		Candidates: []Candidate{
+			{AuthID: "id-a", Provider: "antigravity", Priority: 100},
+			{AuthID: "id-b", Provider: "antigravity", Priority: 100},
+		},
+	})
+	if pick.SelectedAuthID != "id-b" || pick.Excluded != 1 || !pick.Handled {
+		t.Fatalf("stale candidate was not excluded: %#v", pick)
+	}
+}
+
 func TestMixedProviderRetainsFallbackAndUnknownModelFailsClosed(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)

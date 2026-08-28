@@ -261,7 +261,7 @@ func (r *Runtime) handleRequestAfter(_ context.Context, raw []byte) []byte {
 	if engine == nil {
 		return successResult(requestInterceptResponse{})
 	}
-	status := evaluateGuardGroup(engine.Snapshot(r.clock.Now().UTC()), group, cfg.Guard.UnknownAuthPolicy)
+	status := evaluateGuardGroup(engine.Snapshot(r.clock.Now().UTC()), group, cfg.Guard.UnknownAuthPolicy, cfg.Guard.EvidenceMaxAge)
 	if !status.blocked {
 		return successResult(requestInterceptResponse{})
 	}
@@ -298,13 +298,17 @@ type groupBlockStatus struct {
 	retryAfter time.Duration
 }
 
-func evaluateGuardGroup(snapshot guard.Snapshot, group guard.ModelGroup, unknownPolicy string) groupBlockStatus {
+func evaluateGuardGroup(snapshot guard.Snapshot, group guard.ModelGroup, unknownPolicy string, maxAge time.Duration) groupBlockStatus {
 	seen := 0
 	unknown := 0
 	cooling := 0
 	halfOpenReady := false
 	for _, entry := range snapshot.Entries {
 		if entry.ModelGroup != group {
+			continue
+		}
+		if (entry.State == guard.StateClosed || entry.State == guard.StateUninitialized) &&
+			!guard.EvidenceFresh(entry, snapshot.GeneratedAt, maxAge) {
 			continue
 		}
 		seen++

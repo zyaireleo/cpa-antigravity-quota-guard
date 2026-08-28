@@ -13,6 +13,23 @@ type Readiness struct {
 	Reasons         []string `json:"reasons,omitempty"`
 }
 
+// EvidenceFresh reports whether an entry has recent quota-probe evidence.
+// Breaker state and quota evidence have different lifecycles: a failed probe
+// must not erase a prior breaker decision, but stale evidence must not make a
+// closed account eligible for a new request.
+func EvidenceFresh(entry Entry, now time.Time, maxAge time.Duration) bool {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	if maxAge <= 0 {
+		return false
+	}
+	observedAt := entry.LastQuotaEvidenceAt
+	return !observedAt.IsZero() && now.Sub(observedAt) <= maxAge && !observedAt.After(now.Add(time.Minute))
+}
+
 // Ready verifies the breaker-domain preconditions for enforcement. Host-level
 // checks such as being the only active Scheduler remain the runtime's concern.
 func (e *Engine) Ready(now time.Time, maxAge time.Duration) Readiness {
@@ -30,6 +47,8 @@ func (e *Engine) Ready(now time.Time, maxAge time.Duration) Readiness {
 	}
 	prioritySet := false
 	groupsByIndex := make(map[string]map[ModelGroup]bool)
+	freshByGroup := make(map[ModelGroup]bool, 2)
+	uninitializedByGroup := make(map[ModelGroup]bool, 2)
 	for _, entry := range e.entries {
 		if groupsByIndex[entry.AuthIndex] == nil {
 			groupsByIndex[entry.AuthIndex] = make(map[ModelGroup]bool, 2)
@@ -42,10 +61,20 @@ func (e *Engine) Ready(now time.Time, maxAge time.Duration) Readiness {
 			result.UniformPriority = false
 		}
 		if entry.State == StateUninitialized {
-			result.Reasons = append(result.Reasons, fmt.Sprintf("uninitialized:%s:%s", entry.AuthIndex, entry.ModelGroup))
+			uninitializedByGroup[entry.ModelGroup] = true
 		}
-		if entry.LastQuotaEvidenceAt.IsZero() || now.Sub(entry.LastQuotaEvidenceAt) > maxAge || entry.LastQuotaEvidenceAt.After(now.Add(time.Minute)) {
-			result.Reasons = append(result.Reasons, fmt.Sprintf("stale_evidence:%s:%s", entry.AuthIndex, entry.ModelGroup))
+		if EvidenceFresh(*entry, now, maxAge) {
+			freshByGroup[entry.ModelGroup] = true
+		}
+	}
+	for _, group := range []ModelGroup{ModelGroupGemini, ModelGroupClaudeGPT} {
+		if freshByGroup[group] {
+			continue
+		}
+		if uninitializedByGroup[group] {
+			result.Reasons = append(result.Reasons, fmt.Sprintf("uninitialized:%s", group))
+		} else {
+			result.Reasons = append(result.Reasons, fmt.Sprintf("stale_evidence:%s", group))
 		}
 	}
 	for authIndex, groups := range groupsByIndex {
@@ -110,8 +139,7 @@ func (e *Engine) metricsLocked(now time.Time) Metrics {
 		if entry.State == StateOpen || entry.State == StateHalfOpen {
 			metrics.CooldownOpen++
 		}
-		if entry.LastQuotaEvidenceAt.IsZero() || now.Sub(entry.LastQuotaEvidenceAt) > e.config.EvidenceMaxAge ||
-			entry.LastQuotaEvidenceAt.After(now.Add(time.Minute)) {
+		if !EvidenceFresh(*entry, now, e.config.EvidenceMaxAge) {
 			metrics.QuotaEvidenceStale++
 		}
 	}
