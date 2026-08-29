@@ -399,7 +399,7 @@ func (r *Runtime) handleGuardManagement(ctx context.Context, raw []byte) []byte 
 	switch {
 	case strings.HasSuffix(path, "/status") && request.Method == http.MethodGet:
 		if strings.Contains(path, "/resource/") {
-			return envelopeManagement(guardManagementBytes(http.StatusOK, "text/html; charset=utf-8", []byte(guardStatusHTML)), nil)
+			return envelopeManagement(guardManagementBytes(http.StatusOK, "text/html; charset=utf-8", []byte(officialGuardStatusHTML)), nil)
 		}
 		return r.guardStatusResponse()
 	case strings.HasSuffix(path, "/config") && request.Method == http.MethodGet:
@@ -515,7 +515,7 @@ func guardManagementBytes(status int, contentType string, body []byte) Managemen
 		"X-Content-Type-Options": {"nosniff"},
 	}
 	if strings.HasPrefix(strings.ToLower(contentType), "text/html") {
-		headers["Content-Security-Policy"] = []string{"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'"}
+		headers["Content-Security-Policy"] = []string{"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'self'"}
 	}
 	return ManagementResponse{
 		StatusCode:  status,
@@ -524,15 +524,3 @@ func guardManagementBytes(status int, contentType string, body []byte) Managemen
 		Body:        base64.StdEncoding.EncodeToString(body),
 	}
 }
-
-const guardStatusHTML = `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Antigravity Quota Guard</title><style>
-body{font:14px system-ui;margin:2rem;background:#111827;color:#e5e7eb}main{max-width:960px;margin:auto}
-input,button{padding:.65rem;margin:.25rem;background:#1f2937;color:inherit;border:1px solid #4b5563;border-radius:.4rem}
-pre{white-space:pre-wrap;background:#030712;padding:1rem;border-radius:.5rem;min-height:12rem}
-</style></head><body><main><h1>Antigravity Quota Guard</h1>
-<p>Management Key 仅保存在当前页面内存，不写入 URL、localStorage 或 sessionStorage。</p>
-<input id="key" type="password" autocomplete="off" placeholder="Management Key"><button id="load">刷新状态</button><pre id="out">等待加载</pre>
-<script>let managementKey="";document.getElementById("load").onclick=async()=>{managementKey=document.getElementById("key").value.trim();const h={};if(managementKey){h.Authorization="Bearer "+managementKey;h["X-Management-Key"]=managementKey}const r=await fetch("/v0/management/cpa-antigravity-quota-guard/status",{headers:h});document.getElementById("out").textContent=await r.text()};</script>
-</main></body></html>`
