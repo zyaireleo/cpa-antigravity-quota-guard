@@ -1336,7 +1336,7 @@ func (r *Runtime) handleUsageEvent(ctx context.Context, raw []byte) []byte {
 
 	// Keep the raw attempt in history, but do not demote, probe, learn quota
 	// consumption or recover a credential from a host-classified neutral result.
-	if neutralUsageHealth(payload) {
+	if neutralUsageHealth(payload, kind) {
 		return mustMarshal(Envelope{OK: true})
 	}
 
@@ -1599,8 +1599,12 @@ func (realSleeper) Sleep(ctx context.Context, duration time.Duration) error {
 	}
 }
 
-func neutralUsageHealth(event usageEvent) bool {
-	if event.HealthEffect != "neutral" || !strings.HasPrefix(strings.ToLower(event.Model), "gemini-") {
+func neutralUsageHealth(event usageEvent, kind state.FailureKind) bool {
+	model := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(event.Model)), "models/")
+	if event.HealthEffect != "neutral" || !strings.HasPrefix(model, "gemini-") {
+		return false
+	}
+	if kind == state.FailureUnauthorized || kind == state.FailureForbidden {
 		return false
 	}
 	switch event.FailureClass {
