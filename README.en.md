@@ -207,3 +207,7 @@ The plugin registers **resources** (static management dashboard) and **routes** 
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](./LICENSE).
+
+### Request failures and credential health
+
+Host-classified neutral outcomes remain visible in request history. Ambiguous 429 responses and content refusals do not demote credentials, update quota estimates, or trigger recovery probes. This requires the matching CPA request isolation feature; explicit quota exhaustion and disabled-account protections remain active.

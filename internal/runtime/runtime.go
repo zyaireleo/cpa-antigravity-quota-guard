@@ -1228,6 +1228,7 @@ func registrationResult() RegisterResult {
 			"usage_plugin":                true,
 			"scheduler":                   true,
 			"scheduler_across_priorities": true,
+			"neutral_usage_health":        true,
 		},
 	}
 }
@@ -1248,13 +1249,19 @@ type usageDetail struct {
 }
 
 type usageEvent struct {
-	Provider  string       `json:"Provider"`
-	Model     string       `json:"Model"`
-	AuthID    string       `json:"AuthID"`
-	AuthIndex string       `json:"AuthIndex"`
-	Failed    bool         `json:"Failed"`
-	Failure   usageFailure `json:"Failure"`
-	Detail    usageDetail  `json:"Detail"`
+	GatewayTraceID string       `json:"GatewayTraceID"`
+	RequestID      string       `json:"RequestID"`
+	FailureClass   string       `json:"FailureClass"`
+	HealthEffect   string       `json:"HealthEffect"`
+	AttemptsUsed   int          `json:"AttemptsUsed"`
+	RetryExhausted bool         `json:"RetryExhausted"`
+	Provider       string       `json:"Provider"`
+	Model          string       `json:"Model"`
+	AuthID         string       `json:"AuthID"`
+	AuthIndex      string       `json:"AuthIndex"`
+	Failed         bool         `json:"Failed"`
+	Failure        usageFailure `json:"Failure"`
+	Detail         usageDetail  `json:"Detail"`
 }
 
 func (r *Runtime) handleUsageEvent(ctx context.Context, raw []byte) []byte {
@@ -1322,7 +1329,16 @@ func (r *Runtime) handleUsageEvent(ctx context.Context, raw []byte) []byte {
 		Failed:              payload.Failed,
 		StatusCode:          statusCode,
 		ErrorMessage:        payload.Failure.Body,
+		GatewayTraceID:      payload.GatewayTraceID, RequestID: payload.RequestID,
+		FailureClass: payload.FailureClass, HealthEffect: payload.HealthEffect,
+		AttemptsUsed: payload.AttemptsUsed, RetryExhausted: payload.RetryExhausted,
 	})
+
+	// Keep the raw attempt in history, but do not demote, probe, learn quota
+	// consumption or recover a credential from a host-classified neutral result.
+	if neutralUsageHealth(payload) {
+		return mustMarshal(Envelope{OK: true})
+	}
 
 	if !payload.Failed {
 		if err := r.observeUsageSuccess(ctx, resolvedIndex, string(pool), payload.Model, payload.Detail); err != nil {
@@ -1581,4 +1597,15 @@ func (realSleeper) Sleep(ctx context.Context, duration time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func neutralUsageHealth(event usageEvent) bool {
+	if event.HealthEffect != "neutral" || !strings.HasPrefix(strings.ToLower(event.Model), "gemini-") {
+		return false
+	}
+	switch event.FailureClass {
+	case "upstream_429_ambiguous", "upstream_request_rejected", "upstream_attempt_budget_exhausted", "upstream_rate_limited":
+		return true
+	}
+	return false
 }
